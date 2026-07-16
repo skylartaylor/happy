@@ -876,6 +876,8 @@ export const ja: TranslationStructure = {
         usageLimitUntil: ({ time }: { time: string }) => `${time}まで使用制限中`,
         sentAsGoal: 'Sent as goal',
         unknownTime: '不明な時間',
+        copyResponse: '応答をコピー',
+        responseCopied: '応答をコピーしました',
     },
 
     codex: {

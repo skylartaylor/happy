@@ -875,6 +875,8 @@ export const zhHant: TranslationStructure = {
         usageLimitUntil: ({ time }: { time: string }) => `使用限制到 ${time}`,
         sentAsGoal: 'Sent as goal',
         unknownTime: '未知時間',
+        copyResponse: '複製回覆',
+        responseCopied: '回覆已複製',
     },
 
     codex: {

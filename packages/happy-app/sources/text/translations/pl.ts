@@ -891,6 +891,8 @@ export const pl: TranslationStructure = {
         usageLimitUntil: ({ time }: { time: string }) => `Osiągnięto limit użycia do ${time}`,
         sentAsGoal: 'Sent as goal',
         unknownTime: 'nieznany czas',
+        copyResponse: 'Kopiuj odpowiedź',
+        responseCopied: 'Odpowiedź skopiowana',
     },
 
     codex: {

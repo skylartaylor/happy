@@ -890,6 +890,8 @@ export const en = {
         usageLimitUntil: ({ time }: { time: string }) => `Usage limit reached until ${time}`,
         sentAsGoal: 'Sent as goal',
         unknownTime: 'unknown time',
+        copyResponse: 'Copy response',
+        responseCopied: 'Response copied',
     },
 
     codex: {
