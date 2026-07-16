@@ -909,6 +909,7 @@ export const pt: TranslationStructure = {
 
     markdown: {
         // Markdown copy functionality
+        copyCode: 'Copiar código',
         codeCopied: 'Código copiado',
         copyFailed: 'Falha ao copiar',
         mermaidRenderFailed: 'Falha ao renderizar diagrama mermaid',

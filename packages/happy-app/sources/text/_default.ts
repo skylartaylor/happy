@@ -925,6 +925,7 @@ export const en = {
 
     markdown: {
         // Markdown copy functionality
+        copyCode: 'Copy code',
         codeCopied: 'Code copied',
         copyFailed: 'Copy failed',
         mermaidRenderFailed: 'Failed to render mermaid diagram',

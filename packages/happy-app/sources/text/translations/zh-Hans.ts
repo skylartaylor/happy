@@ -911,6 +911,7 @@ export const zhHans: TranslationStructure = {
 
     markdown: {
         // Markdown copy functionality
+        copyCode: '复制代码',
         codeCopied: '代码已复制',
         copyFailed: '复制失败',
         mermaidRenderFailed: '渲染 mermaid 图表失败',

@@ -911,6 +911,7 @@ export const ja: TranslationStructure = {
 
     markdown: {
         // Markdown copy functionality
+        copyCode: 'コードをコピー',
         codeCopied: 'コードをコピーしました',
         copyFailed: 'コピーに失敗しました',
         mermaidRenderFailed: 'Mermaidダイアグラムのレンダリングに失敗しました',

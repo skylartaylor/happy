@@ -11,12 +11,11 @@ import { Modal } from '@/modal';
 import { useLocalSetting } from '@/sync/storage';
 import { storeTempText } from '@/sync/persistence';
 import { useRouter } from 'expo-router';
-import * as Clipboard from 'expo-clipboard';
 import * as WebBrowser from 'expo-web-browser';
 import { MermaidRenderer } from './MermaidRenderer';
-import { t } from '@/text';
 import { isHttpMarkdownLink } from './linkUtils';
 import { openExternalUrl } from '@/utils/openExternalUrl';
+import { MarkdownCodeCopyButton } from '../MarkdownCodeCopyButton';
 
 // Option type for callback
 export type Option = {
@@ -38,6 +37,11 @@ export const MarkdownView = React.memo((props: {
     const markdownCopyV2 = useLocalSetting('markdownCopyV2');
     const selectable = Platform.OS === 'web' || !markdownCopyV2;
     const router = useRouter();
+    const codeCopyPressActive = React.useRef(false);
+
+    const handleCodeCopyPressChange = React.useCallback((pressed: boolean) => {
+        codeCopyPressActive.current = pressed;
+    }, []);
 
     const handleLinkPress = React.useCallback((url: string) => {
         if (!isHttpMarkdownLink(url)) {
@@ -48,6 +52,10 @@ export const MarkdownView = React.memo((props: {
     }, []);
 
     const handleLongPress = React.useCallback(() => {
+        if (codeCopyPressActive.current) {
+            return;
+        }
+
         try {
             const textId = storeTempText(props.markdown);
             router.push(`/text-selection?textId=${textId}`);
@@ -71,7 +79,7 @@ export const MarkdownView = React.memo((props: {
                     } else if (block.type === 'numbered-list') {
                         return <RenderNumberedListBlock items={block.items} key={index} first={index === 0} last={index === blocks.length - 1} selectable={selectable} onLinkPress={handleLinkPress} />;
                     } else if (block.type === 'code-block') {
-                        return <RenderCodeBlock content={block.content} language={block.language} key={index} first={index === 0} last={index === blocks.length - 1} selectable={selectable} />;
+                        return <RenderCodeBlock content={block.content} language={block.language} key={index} first={index === 0} last={index === blocks.length - 1} selectable={selectable} onCopyPressChange={handleCodeCopyPressChange} />;
                     } else if (block.type === 'mermaid') {
                         return <MermaidRenderer content={block.content} key={index} />;
                     } else if (block.type === 'options') {
@@ -161,18 +169,11 @@ function RenderNumberedListBlock(props: { items: { number: number, depth: number
     );
 }
 
-function RenderCodeBlock(props: { content: string, language: string | null, first: boolean, last: boolean, selectable: boolean }) {
+function RenderCodeBlock(props: { content: string, language: string | null, first: boolean, last: boolean, selectable: boolean, onCopyPressChange: (pressed: boolean) => void }) {
     const [isHovered, setIsHovered] = React.useState(false);
-
-    const copyCode = React.useCallback(async () => {
-        try {
-            await Clipboard.setStringAsync(props.content);
-            Modal.alert(t('common.success'), t('markdown.codeCopied'), [{ text: t('common.ok'), style: 'cancel' }]);
-        } catch (error) {
-            console.error('Failed to copy code:', error);
-            Modal.alert(t('common.error'), t('markdown.copyFailed'), [{ text: t('common.ok'), style: 'cancel' }]);
-        }
-    }, [props.content]);
+    const [isFocused, setIsFocused] = React.useState(false);
+    const isNative = Platform.OS !== 'web';
+    const isCopyButtonVisible = isHovered || isFocused;
 
     return (
         <View
@@ -182,9 +183,34 @@ function RenderCodeBlock(props: { content: string, language: string | null, firs
             // @ts-ignore - Web only events
             onMouseLeave={() => setIsHovered(false)}
         >
-            {props.language && <Text selectable={props.selectable} style={style.codeLanguage}>{props.language}</Text>}
+            {isNative ? (
+                <View style={style.nativeCodeHeader}>
+                    <View style={style.nativeCodeLanguageContainer}>
+                        {props.language ? (
+                            <Text
+                                selectable={props.selectable}
+                                numberOfLines={1}
+                                style={style.nativeCodeLanguage}
+                            >
+                                {props.language}
+                            </Text>
+                        ) : null}
+                    </View>
+                    <View style={style.nativeCopyButtonContainer}>
+                        <MarkdownCodeCopyButton
+                            content={props.content}
+                            onFocusChange={setIsFocused}
+                            onPressChange={props.onCopyPressChange}
+                        />
+                    </View>
+                </View>
+            ) : props.language ? (
+                <Text selectable={props.selectable} style={style.codeLanguage}>{props.language}</Text>
+            ) : null}
             <HorizontalScrollView
-                contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 16 }}
+                contentContainerStyle={isNative
+                    ? { paddingHorizontal: 16, paddingTop: 8, paddingBottom: 16 }
+                    : { paddingHorizontal: 16, paddingVertical: 16 }}
             >
                 <SimpleSyntaxHighlighter
                     code={props.content}
@@ -192,17 +218,18 @@ function RenderCodeBlock(props: { content: string, language: string | null, firs
                     selectable={props.selectable}
                 />
             </HorizontalScrollView>
-            <View
-                style={[style.copyButtonWrapper, isHovered && style.copyButtonWrapperVisible]}
-                {...(Platform.OS === 'web' ? ({ className: 'copy-button-wrapper' } as any) : {})}
-            >
-                <Pressable
-                    style={style.copyButton}
-                    onPress={copyCode}
+            {!isNative ? (
+                <View
+                    style={[style.copyButtonWrapper, isCopyButtonVisible && style.copyButtonWrapperVisible]}
+                    {...({ className: 'copy-button-wrapper' } as any)}
                 >
-                    <Text style={style.copyButtonText}>{t('common.copy')}</Text>
-                </Pressable>
-            </View>
+                    <MarkdownCodeCopyButton
+                        content={props.content}
+                        onFocusChange={setIsFocused}
+                        onPressChange={props.onCopyPressChange}
+                    />
+                </View>
+            ) : null}
         </View>
     );
 }
@@ -509,6 +536,24 @@ const style = StyleSheet.create((theme) => ({
         opacity: 1,
         pointerEvents: 'auto',
     },
+    nativeCodeHeader: {
+        minHeight: 48,
+        paddingLeft: 16,
+        flexDirection: 'row',
+        alignItems: 'center',
+    },
+    nativeCodeLanguageContainer: {
+        flex: 1,
+        minWidth: 0,
+    },
+    nativeCodeLanguage: {
+        ...Typography.mono(),
+        color: theme.colors.textSecondary,
+        fontSize: 12,
+    },
+    nativeCopyButtonContainer: {
+        padding: 8,
+    },
     codeLanguage: {
         ...Typography.mono(),
         color: theme.colors.textSecondary,
@@ -549,41 +594,6 @@ const style = StyleSheet.create((theme) => ({
         lineHeight: 20,
         color: theme.colors.textSecondary,
     },
-    copyButtonContainer: {
-        position: 'absolute',
-        top: 8,
-        right: 8,
-        zIndex: 10,
-        elevation: 10,
-        opacity: 1,
-    },
-    copyButtonContainerHidden: {
-        opacity: 0,
-    },
-    copyButton: {
-        backgroundColor: theme.colors.surfaceHighest,
-        paddingHorizontal: 8,
-        paddingVertical: 4,
-        borderRadius: 4,
-        borderWidth: 1,
-        borderColor: theme.colors.divider,
-        cursor: 'pointer',
-    },
-    copyButtonHidden: {
-        display: 'none',
-    },
-    copyButtonCopied: {
-        backgroundColor: theme.colors.success,
-        borderColor: theme.colors.success,
-        opacity: 1,
-    },
-    copyButtonText: {
-        ...Typography.default(),
-        color: theme.colors.text,
-        fontSize: 12,
-        lineHeight: 16,
-    },
-
     //
     // Options Block
     //
