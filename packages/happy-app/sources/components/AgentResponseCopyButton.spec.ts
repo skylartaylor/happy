@@ -1,5 +1,7 @@
 import * as React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// @ts-expect-error react-test-renderer does not bundle TypeScript declarations.
+import { act, create } from 'react-test-renderer';
 
 vi.mock('@expo/vector-icons', () => ({
     Ionicons: (props: Record<string, unknown>) => React.createElement('Icon', props),
@@ -44,7 +46,12 @@ vi.mock('@/utils/copyTextToClipboard', () => ({
     isCopyableText: vi.fn(() => true),
 }));
 
-import { AgentResponseCopyButtonView } from './AgentResponseCopyButton';
+import { AccessibilityInfo } from 'react-native';
+import { Modal } from '@/modal';
+import { copyTextToClipboard } from '@/utils/copyTextToClipboard';
+import { AgentResponseCopyButton, AgentResponseCopyButtonView } from './AgentResponseCopyButton';
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 type ElementWithProps = React.ReactElement<Record<string, any>>;
 
@@ -78,6 +85,159 @@ function findByPropOrNull(node: React.ReactNode, prop: string, value: unknown): 
         return null;
     }
 }
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((promiseResolve) => {
+        resolve = promiseResolve;
+    });
+    return { promise, resolve };
+}
+
+describe('AgentResponseCopyButton', () => {
+    const copyTextMock = vi.mocked(copyTextToClipboard);
+    const alertMock = vi.mocked(Modal.alert);
+    const announceMock = vi.mocked(AccessibilityInfo.announceForAccessibility);
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('shows success for the current response and resets it after two seconds', async () => {
+        copyTextMock.mockResolvedValueOnce({ ok: true });
+        let renderer: any;
+        await act(async () => {
+            renderer = create(React.createElement(AgentResponseCopyButton, {
+                messageId: 'message-1',
+                text: '  **exact markdown**\n',
+            }));
+        });
+
+        await act(async () => {
+            await renderer.root.findByType('Pressable').props.onPress();
+        });
+
+        expect(copyTextMock).toHaveBeenCalledWith('  **exact markdown**\n');
+        expect(renderer.root.findByType('Pressable').props.accessibilityLabel).toBe('Response copied');
+        expect(announceMock).toHaveBeenCalledWith('Response copied');
+
+        await act(async () => {
+            vi.advanceTimersByTime(2000);
+        });
+        expect(renderer.root.findByType('Pressable').props.accessibilityLabel).toBe('Copy response');
+
+        await act(async () => {
+            renderer.unmount();
+        });
+    });
+
+    it('ignores a late success after the response snapshot changes', async () => {
+        const pendingCopy = deferred<{ ok: true }>();
+        copyTextMock.mockReturnValueOnce(pendingCopy.promise);
+        let renderer: any;
+        await act(async () => {
+            renderer = create(React.createElement(AgentResponseCopyButton, {
+                messageId: 'message-1',
+                text: 'partial response',
+            }));
+        });
+
+        let copyPromise!: Promise<void>;
+        await act(async () => {
+            copyPromise = renderer.root.findByType('Pressable').props.onPress();
+        });
+        await act(async () => {
+            renderer.update(React.createElement(AgentResponseCopyButton, {
+                messageId: 'message-1',
+                text: 'completed response',
+            }));
+        });
+        await act(async () => {
+            pendingCopy.resolve({ ok: true });
+            await copyPromise;
+        });
+
+        expect(renderer.root.findByType('Pressable').props.accessibilityLabel).toBe('Copy response');
+        expect(announceMock).not.toHaveBeenCalled();
+
+        await act(async () => {
+            renderer.unmount();
+        });
+    });
+
+    it('shows failures only for the current response snapshot', async () => {
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+        copyTextMock.mockResolvedValueOnce({ ok: false, error: new Error('current failure') });
+        let renderer: any;
+        await act(async () => {
+            renderer = create(React.createElement(AgentResponseCopyButton, {
+                messageId: 'message-1',
+                text: 'first response',
+            }));
+        });
+
+        await act(async () => {
+            await renderer.root.findByType('Pressable').props.onPress();
+        });
+        expect(alertMock).toHaveBeenCalledOnce();
+
+        const pendingCopy = deferred<{ ok: false; error: Error }>();
+        copyTextMock.mockReturnValueOnce(pendingCopy.promise);
+        let copyPromise!: Promise<void>;
+        await act(async () => {
+            copyPromise = renderer.root.findByType('Pressable').props.onPress();
+        });
+        await act(async () => {
+            renderer.update(React.createElement(AgentResponseCopyButton, {
+                messageId: 'message-2',
+                text: 'second response',
+            }));
+        });
+        await act(async () => {
+            pendingCopy.resolve({ ok: false, error: new Error('stale failure') });
+            await copyPromise;
+        });
+
+        expect(alertMock).toHaveBeenCalledOnce();
+
+        await act(async () => {
+            renderer.unmount();
+        });
+        consoleError.mockRestore();
+    });
+
+    it('ignores a copy result that resolves after unmount', async () => {
+        const pendingCopy = deferred<{ ok: true }>();
+        copyTextMock.mockReturnValueOnce(pendingCopy.promise);
+        let renderer: any;
+        await act(async () => {
+            renderer = create(React.createElement(AgentResponseCopyButton, {
+                messageId: 'message-1',
+                text: 'response',
+            }));
+        });
+
+        let copyPromise!: Promise<void>;
+        await act(async () => {
+            copyPromise = renderer.root.findByType('Pressable').props.onPress();
+        });
+        await act(async () => {
+            renderer.unmount();
+        });
+        await act(async () => {
+            pendingCopy.resolve({ ok: true });
+            await copyPromise;
+        });
+
+        expect(announceMock).not.toHaveBeenCalled();
+        expect(alertMock).not.toHaveBeenCalled();
+    });
+});
 
 describe('AgentResponseCopyButtonView', () => {
     it('renders an accessible copy action with the repository touch-target pattern', () => {

@@ -1,10 +1,13 @@
 import * as React from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+// @ts-expect-error react-test-renderer does not bundle TypeScript declarations.
+import { act, create } from 'react-test-renderer';
 
 vi.mock('react-native', () => ({
     AccessibilityInfo: { announceForAccessibility: vi.fn() },
     Platform: { OS: 'android' },
     Pressable: ({ children, ...props }: Record<string, any>) => React.createElement('Pressable', props, children),
+    View: ({ children, ...props }: Record<string, any>) => React.createElement('View', props, children),
 }));
 
 vi.mock('react-native-unistyles', () => {
@@ -45,7 +48,12 @@ vi.mock('@/utils/copyTextToClipboard', () => ({
     copyTextToClipboard: vi.fn(),
 }));
 
-import { MarkdownCodeCopyButtonView } from './MarkdownCodeCopyButton';
+import { AccessibilityInfo, Platform } from 'react-native';
+import { Modal } from '@/modal';
+import { copyTextToClipboard } from '@/utils/copyTextToClipboard';
+import { MarkdownCodeCopyButton, MarkdownCodeCopyButtonView } from './MarkdownCodeCopyButton';
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 type ElementWithProps = React.ReactElement<Record<string, any>>;
 
@@ -79,6 +87,129 @@ function textContent(node: React.ReactNode): string {
     }
     return childrenOf(node).map(textContent).join('');
 }
+
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((promiseResolve) => {
+        resolve = promiseResolve;
+    });
+    return { promise, resolve };
+}
+
+describe('MarkdownCodeCopyButton', () => {
+    const copyTextMock = vi.mocked(copyTextToClipboard);
+    const alertMock = vi.mocked(Modal.alert);
+    const announceMock = vi.mocked(AccessibilityInfo.announceForAccessibility);
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it('shows success for the current code and resets it after two seconds', async () => {
+        copyTextMock.mockResolvedValueOnce({ ok: true });
+        let renderer: any;
+        await act(async () => {
+            renderer = create(React.createElement(MarkdownCodeCopyButton, {
+                content: '  const exact = true;\n',
+            }));
+        });
+
+        await act(async () => {
+            await renderer.root.findByType('Pressable').props.onPress();
+        });
+
+        expect(copyTextMock).toHaveBeenCalledWith('  const exact = true;\n');
+        expect(renderer.root.findByType('Pressable').props.accessibilityLabel).toBe('Code copied');
+        expect(announceMock).toHaveBeenCalledWith('Code copied');
+
+        await act(async () => {
+            vi.advanceTimersByTime(2000);
+        });
+        expect(renderer.root.findByType('Pressable').props.accessibilityLabel).toBe('Copy code');
+
+        await act(async () => {
+            renderer.unmount();
+        });
+    });
+
+    it('ignores late success and failure results after the code changes', async () => {
+        const pendingSuccess = deferred<{ ok: true }>();
+        copyTextMock.mockReturnValueOnce(pendingSuccess.promise);
+        let renderer: any;
+        await act(async () => {
+            renderer = create(React.createElement(MarkdownCodeCopyButton, {
+                content: 'old code',
+            }));
+        });
+
+        let successPromise!: Promise<void>;
+        await act(async () => {
+            successPromise = renderer.root.findByType('Pressable').props.onPress();
+        });
+        await act(async () => {
+            renderer.update(React.createElement(MarkdownCodeCopyButton, {
+                content: 'new code',
+            }));
+        });
+        await act(async () => {
+            pendingSuccess.resolve({ ok: true });
+            await successPromise;
+        });
+
+        expect(renderer.root.findByType('Pressable').props.accessibilityLabel).toBe('Copy code');
+        expect(announceMock).not.toHaveBeenCalled();
+
+        const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const pendingFailure = deferred<{ ok: false; error: Error }>();
+        copyTextMock.mockReturnValueOnce(pendingFailure.promise);
+        let failurePromise!: Promise<void>;
+        await act(async () => {
+            failurePromise = renderer.root.findByType('Pressable').props.onPress();
+        });
+        await act(async () => {
+            renderer.update(React.createElement(MarkdownCodeCopyButton, {
+                content: 'newest code',
+            }));
+        });
+        await act(async () => {
+            pendingFailure.resolve({ ok: false, error: new Error('stale failure') });
+            await failurePromise;
+        });
+
+        expect(alertMock).not.toHaveBeenCalled();
+
+        await act(async () => {
+            renderer.unmount();
+        });
+        consoleError.mockRestore();
+    });
+
+    it('releases the parent press guard when the control unmounts', async () => {
+        const onPressChange = vi.fn();
+        let renderer: any;
+        await act(async () => {
+            renderer = create(React.createElement(MarkdownCodeCopyButton, {
+                content: 'code',
+                onPressChange,
+            }));
+        });
+
+        await act(async () => {
+            renderer.root.findByType('Pressable').props.onPressIn();
+        });
+        expect(onPressChange).toHaveBeenLastCalledWith(true);
+
+        await act(async () => {
+            renderer.unmount();
+        });
+        expect(onPressChange).toHaveBeenLastCalledWith(false);
+    });
+});
 
 describe('MarkdownCodeCopyButtonView', () => {
     it('renders a labeled copy control and forwards gesture-boundary callbacks', () => {
@@ -120,5 +251,26 @@ describe('MarkdownCodeCopyButtonView', () => {
 
         expect(findByProp(element, 'accessibilityLabel', 'Code copied')).toBeTruthy();
         expect(textContent(element)).toBe('Copied');
+    });
+
+    it('announces copied feedback through a live region on web', () => {
+        const originalPlatform = Platform.OS;
+        (Platform as { OS: string }).OS = 'web';
+
+        try {
+            const element = MarkdownCodeCopyButtonView({
+                copied: true,
+                onPress: vi.fn(),
+                onFocus: vi.fn(),
+                onBlur: vi.fn(),
+                onPressIn: vi.fn(),
+                onPressOut: vi.fn(),
+            });
+            const liveRegion = findByProp(element, 'aria-live', 'polite');
+
+            expect(textContent(liveRegion)).toBe('Code copied');
+        } finally {
+            (Platform as { OS: string }).OS = originalPlatform;
+        }
     });
 });

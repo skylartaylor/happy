@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { AccessibilityInfo, Platform, Pressable } from 'react-native';
+import { AccessibilityInfo, Platform, Pressable, View } from 'react-native';
 import { StyleSheet } from 'react-native-unistyles';
 import { Modal } from '@/modal';
 import { t } from '@/text';
@@ -108,25 +108,32 @@ export function MarkdownCodeCopyButtonView(props: {
     onPressOut: () => void;
 }) {
     return (
-        <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={props.copied ? t('markdown.codeCopied') : t('markdown.copyCode')}
-            onPress={props.onPress}
-            onFocus={props.onFocus}
-            onBlur={props.onBlur}
-            onPressIn={props.onPressIn}
-            onPressOut={props.onPressOut}
-            hitSlop={8}
-            style={({ pressed }) => [
-                styles.copyButton,
-                props.copied && styles.copyButtonCopied,
-                pressed && styles.copyButtonPressed,
-            ]}
-        >
-            <Text style={[styles.copyButtonText, props.copied && styles.copyButtonTextCopied]}>
-                {props.copied ? t('common.copied') : t('common.copy')}
-            </Text>
-        </Pressable>
+        <>
+            <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={props.copied ? t('markdown.codeCopied') : t('markdown.copyCode')}
+                onPress={props.onPress}
+                onFocus={props.onFocus}
+                onBlur={props.onBlur}
+                onPressIn={props.onPressIn}
+                onPressOut={props.onPressOut}
+                hitSlop={8}
+                style={({ pressed }) => [
+                    styles.copyButton,
+                    props.copied && styles.copyButtonCopied,
+                    pressed && styles.copyButtonPressed,
+                ]}
+            >
+                <Text style={[styles.copyButtonText, props.copied && styles.copyButtonTextCopied]}>
+                    {props.copied ? t('common.copied') : t('common.copy')}
+                </Text>
+            </Pressable>
+            {Platform.OS === 'web' && (
+                <View aria-live="polite" style={styles.webAnnouncement}>
+                    <Text>{props.copied ? t('markdown.codeCopied') : ''}</Text>
+                </View>
+            )}
+        </>
     );
 }
 
@@ -156,5 +163,12 @@ const styles = StyleSheet.create((theme) => ({
     },
     copyButtonTextCopied: {
         color: theme.colors.success,
+    },
+    webAnnouncement: {
+        position: 'absolute',
+        left: -10000,
+        width: 1,
+        height: 1,
+        overflow: 'hidden',
     },
 }));
