@@ -2,6 +2,7 @@ import { render } from "ink";
 import React from "react";
 import { ApiClient } from '@/api/api';
 import { CodexAppServerClient } from './codexAppServerClient';
+import { listOpenRouterModels } from './openRouterModels';
 import type { ReasoningEffort } from './codexAppServerTypes';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
@@ -864,23 +865,38 @@ export async function runCodex(opts: {
         await client.connect();
         logger.debug('[codex]: client.connect done');
 
-        void client.listModels().then((models) => {
-            if (models.length === 0) {
-                return;
+        void (async () => {
+            const openRouterApiKey = process.env.OPENROUTER_API_KEY;
+            if (openRouterApiKey) {
+                return {
+                    models: await listOpenRouterModels(openRouterApiKey),
+                    currentModelCode: undefined,
+                };
             }
 
-            session.updateMetadata((currentMetadata) => ({
-                ...currentMetadata,
+            const models = await client.listModels();
+            return {
                 models: models.map((model) => ({
                     code: model.model,
                     value: model.displayName || model.model,
                     description: model.model,
                 })),
                 currentModelCode: models.find((model) => model.isDefault)?.model,
+            };
+        })().then(({ models, currentModelCode }) => {
+            if (models.length === 0) {
+                return;
+            }
+
+            session.updateMetadata((currentMetadata) => ({
+                ...currentMetadata,
+                models,
+                currentModelCode,
             }));
         }).catch((error) => {
-            // Older Codex versions may not expose model/list. The app keeps its
-            // hardcoded fallback list in that case.
+            // Older Codex versions may not expose model/list, and provider
+            // catalogs may be temporarily unavailable. The app keeps its
+            // hardcoded fallback list in either case.
             logger.debug('[Codex] Failed to load model catalog:', error);
         });
 
