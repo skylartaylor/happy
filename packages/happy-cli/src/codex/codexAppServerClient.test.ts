@@ -211,6 +211,21 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.disconnect();
     });
 
+    it('starts a catalog client with an explicit model provider', async () => {
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient(undefined, 'openai');
+
+        await client.connect();
+
+        expect(mockSpawn).toHaveBeenCalledWith(
+            'codex',
+            ['app-server', '--listen', 'stdio://', '-c', 'model_provider="openai"'],
+            expect.anything(),
+        );
+
+        await client.disconnect();
+    });
+
     it('falls back to non-sandbox transport when sandbox initialization fails', async () => {
         mockInitializeSandbox.mockRejectedValue(new Error('sandbox init failed'));
         const { CodexAppServerClient } = await import('./codexAppServerClient');

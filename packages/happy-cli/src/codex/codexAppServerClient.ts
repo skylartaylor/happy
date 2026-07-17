@@ -220,6 +220,7 @@ export class CodexAppServerClient {
     private processEpoch = 0;
     private connected = false;
     private sandboxConfig?: SandboxConfig;
+    private modelProviderOverride?: 'openai' | 'openrouter';
     private sandboxCleanup: (() => Promise<void>) | null = null;
     public sandboxEnabled = false;
 
@@ -260,8 +261,9 @@ export class CodexAppServerClient {
     private eventHandler: ((msg: EventMsg) => void) | null = null;
     private approvalHandler: ApprovalHandler | null = null;
 
-    constructor(sandboxConfig?: SandboxConfig) {
+    constructor(sandboxConfig?: SandboxConfig, modelProviderOverride?: 'openai' | 'openrouter') {
         this.sandboxConfig = sandboxConfig;
+        this.modelProviderOverride = modelProviderOverride;
     }
 
     get threadId(): string | null {
@@ -609,13 +611,17 @@ export class CodexAppServerClient {
         }
 
         let command = 'codex';
-        let args = ['app-server', '--listen', 'stdio://'];
+        const appServerArgs = ['app-server', '--listen', 'stdio://'];
+        if (this.modelProviderOverride) {
+            appServerArgs.push('-c', `model_provider="${this.modelProviderOverride}"`);
+        }
+        let args = appServerArgs;
         this.sandboxEnabled = false;
 
         if (this.sandboxConfig?.enabled && process.platform !== 'win32') {
             try {
                 this.sandboxCleanup = await initializeSandbox(this.sandboxConfig, process.cwd());
-                const wrapped = await wrapForMcpTransport('codex', ['app-server', '--listen', 'stdio://']);
+                const wrapped = await wrapForMcpTransport('codex', appServerArgs);
                 command = wrapped.command;
                 args = wrapped.args;
                 this.sandboxEnabled = true;

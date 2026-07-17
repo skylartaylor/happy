@@ -874,8 +874,16 @@ export async function runCodex(opts: {
         void (async () => {
             const openRouterApiKey = process.env.OPENROUTER_API_KEY;
             if (openRouterApiKey) {
+                const subscriptionCatalogClient = new CodexAppServerClient(undefined, 'openai');
                 const [codexResult, openRouterResult] = await Promise.allSettled([
-                    client.listModels(),
+                    (async () => {
+                        await subscriptionCatalogClient.connect();
+                        try {
+                            return await subscriptionCatalogClient.listModels();
+                        } finally {
+                            await subscriptionCatalogClient.disconnect();
+                        }
+                    })(),
                     listOpenRouterModels(openRouterApiKey),
                 ]);
                 const codexModels = codexResult.status === 'fulfilled' ? codexResult.value : [];
