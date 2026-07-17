@@ -3,6 +3,11 @@ import React from "react";
 import { ApiClient } from '@/api/api';
 import { CodexAppServerClient } from './codexAppServerClient';
 import { listOpenRouterModels } from './openRouterModels';
+import {
+    decodeCodexModelSelection,
+    encodeCodexModelSelection,
+    needsCodexProviderSwitch,
+} from './codexModelSelection';
 import type { ReasoningEffort } from './codexAppServerTypes';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
@@ -859,6 +864,7 @@ export async function runCodex(opts: {
     } as const;
     let first = true;
     let appendSystemPromptInjected = false;
+    let activeModelProvider: string | undefined;
 
     try {
         logger.debug('[codex]: client.connect begin');
@@ -868,8 +874,31 @@ export async function runCodex(opts: {
         void (async () => {
             const openRouterApiKey = process.env.OPENROUTER_API_KEY;
             if (openRouterApiKey) {
+                const [codexResult, openRouterResult] = await Promise.allSettled([
+                    client.listModels(),
+                    listOpenRouterModels(openRouterApiKey),
+                ]);
+                const codexModels = codexResult.status === 'fulfilled' ? codexResult.value : [];
+                const openRouterModels = openRouterResult.status === 'fulfilled' ? openRouterResult.value : [];
+                if (codexResult.status === 'rejected') {
+                    logger.debug('[Codex] Failed to load Codex subscription model catalog:', codexResult.reason);
+                }
+                if (openRouterResult.status === 'rejected') {
+                    logger.debug('[Codex] Failed to load OpenRouter model catalog:', openRouterResult.reason);
+                }
                 return {
-                    models: await listOpenRouterModels(openRouterApiKey),
+                    models: [
+                        ...codexModels.map((model) => ({
+                            code: encodeCodexModelSelection('openai', model.model),
+                            value: `Codex subscription · ${model.displayName || model.model}`,
+                            description: model.model,
+                        })),
+                        ...openRouterModels.map((model) => ({
+                            ...model,
+                            code: encodeCodexModelSelection('openrouter', model.code),
+                            value: `OpenRouter · ${model.value}`,
+                        })),
+                    ],
                     currentModelCode: undefined,
                 };
             }
@@ -901,14 +930,18 @@ export async function runCodex(opts: {
         });
 
         if (opts.resumeThreadId) {
-            await resumeExistingThread({
+            const selection = decodeCodexModelSelection(opts.model);
+            const resumedThread = await resumeExistingThread({
                 client,
                 session,
                 messageBuffer,
                 threadId: opts.resumeThreadId,
+                model: selection.model,
+                modelProvider: selection.modelProvider,
                 cwd: process.cwd(),
                 mcpServers,
             });
+            activeModelProvider = resumedThread.modelProvider;
             first = false;
             appendSystemPromptInjected = true;
         }
@@ -969,6 +1002,7 @@ export async function runCodex(opts: {
             if (isCodexClearText(message.message)) {
                 logger.debug('[Codex] Handling /clear command - resetting Codex thread state');
                 client.clearThreadState();
+                activeModelProvider = undefined;
                 currentTurnId = null;
                 codexStartedSubagents = new Set<string>();
                 codexActiveSubagents = new Set<string>();
@@ -1014,19 +1048,38 @@ export async function runCodex(opts: {
                 activeTurnPermissionMode = message.mode.permissionMode;
 
                 // Start thread on first turn (thread persists across mode changes)
+                const modelSelection = decodeCodexModelSelection(message.mode.model);
                 let activeThreadId = client.threadId;
                 if (!client.hasActiveThread() || !activeThreadId) {
                     const startedThread = await client.startThread({
-                        model: message.mode.model,
+                        model: modelSelection.model,
+                        modelProvider: modelSelection.modelProvider,
                         cwd: process.cwd(),
                         approvalPolicy: executionPolicy.approvalPolicy,
                         sandbox: executionPolicy.sandbox,
                         mcpServers,
                     });
                     activeThreadId = startedThread.threadId;
+                    activeModelProvider = startedThread.modelProvider;
                     session.updateMetadata((currentMetadata) => ({
                         ...currentMetadata,
                         codexThreadId: startedThread.threadId,
+                    }));
+                } else if (needsCodexProviderSwitch(activeModelProvider, modelSelection)) {
+                    const resumedThread = await client.resumeThread({
+                        threadId: activeThreadId,
+                        model: modelSelection.model,
+                        modelProvider: modelSelection.modelProvider,
+                        cwd: process.cwd(),
+                        approvalPolicy: executionPolicy.approvalPolicy,
+                        sandbox: executionPolicy.sandbox,
+                        mcpServers,
+                    });
+                    activeThreadId = resumedThread.threadId;
+                    activeModelProvider = resumedThread.modelProvider;
+                    session.updateMetadata((currentMetadata) => ({
+                        ...currentMetadata,
+                        codexThreadId: resumedThread.threadId,
                     }));
                 }
 
@@ -1063,7 +1116,7 @@ export async function runCodex(opts: {
                 });
 
                 const result = await client.sendTurnAndWait(turnPrompt, {
-                    model: message.mode.model,
+                    model: modelSelection.model,
                     approvalPolicy: executionPolicy.approvalPolicy,
                     sandbox: executionPolicy.sandbox,
                     effort: message.mode.effort,

@@ -716,6 +716,60 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.disconnect();
     });
 
+    it('passes model providers through start and resume', async () => {
+        const requests: MockRpcMessage[] = [];
+        const proc = createMockProcess({
+            pid: 2701,
+            onRequest: (msg, stdout) => {
+                requests.push(msg);
+                if ((msg.method === 'thread/start' || msg.method === 'thread/resume') && msg.id != null) {
+                    const params = msg.params as { model: string; modelProvider: string };
+                    setTimeout(() => {
+                        pushJsonLine(stdout, {
+                            id: msg.id,
+                            result: {
+                                thread: { id: 'thread-provider', path: '/tmp/thread-provider' },
+                                model: params.model,
+                                modelProvider: params.modelProvider,
+                                cwd: '/tmp/project',
+                                approvalPolicy: 'on-request',
+                                sandbox: { type: 'readOnly' },
+                                reasoningEffort: null,
+                            },
+                        });
+                    }, 0);
+                }
+            },
+        });
+        mockSpawn.mockImplementation(() => proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+
+        await client.connect();
+        await expect(client.startThread({
+            model: 'gpt-test',
+            modelProvider: 'openai',
+            cwd: '/tmp/project',
+        })).resolves.toMatchObject({ modelProvider: 'openai' });
+        await expect(client.resumeThread({
+            model: 'z-ai/glm-5.2',
+            modelProvider: 'openrouter',
+        })).resolves.toMatchObject({ modelProvider: 'openrouter' });
+
+        expect(requests.find((msg) => msg.method === 'thread/start')?.params).toMatchObject({
+            model: 'gpt-test',
+            modelProvider: 'openai',
+        });
+        expect(requests.find((msg) => msg.method === 'thread/resume')?.params).toMatchObject({
+            threadId: 'thread-provider',
+            model: 'z-ai/glm-5.2',
+            modelProvider: 'openrouter',
+        });
+
+        await client.disconnect();
+    });
+
     it('sends extra localImage input items and omits empty text for image-only turns', async () => {
         const requests: MockRpcMessage[] = [];
         const proc = createMockProcess({

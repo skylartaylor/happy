@@ -228,6 +228,7 @@ export class CodexAppServerClient {
     private _turnId: string | null = null;
     private threadDefaults: {
         model?: string;
+        modelProvider?: string;
         cwd?: string;
         approvalPolicy?: ApprovalPolicy;
         sandbox?: SandboxMode;
@@ -772,6 +773,7 @@ export class CodexAppServerClient {
 
     private rememberThreadDefaults(opts: {
         model?: string;
+        modelProvider?: string;
         cwd?: string;
         approvalPolicy?: ApprovalPolicy;
         sandbox?: SandboxMode;
@@ -779,6 +781,7 @@ export class CodexAppServerClient {
     }): void {
         this.threadDefaults = {
             model: opts.model,
+            modelProvider: opts.modelProvider,
             cwd: opts.cwd,
             approvalPolicy: opts.approvalPolicy,
             sandbox: opts.sandbox,
@@ -826,14 +829,15 @@ export class CodexAppServerClient {
 
     async startThread(opts: {
         model?: string;
+        modelProvider?: string;
         cwd?: string;
         approvalPolicy?: ApprovalPolicy;
         sandbox?: SandboxMode;
         mcpServers?: Record<string, unknown>;
-    }): Promise<{ threadId: string; model: string }> {
+    }): Promise<{ threadId: string; model: string; modelProvider: string }> {
         const params: NewConversationParams = {
             model: opts.model ?? null,
-            modelProvider: null,
+            modelProvider: opts.modelProvider ?? null,
             profile: null,
             cwd: opts.cwd ?? process.cwd(),
             approvalPolicy: opts.approvalPolicy ?? null,
@@ -853,17 +857,18 @@ export class CodexAppServerClient {
         this.rawSubagentActivitySignaturesByItemId.clear();
         this.rememberThreadDefaults(opts);
         logger.debug('[CodexAppServer] Thread started:', this._threadId);
-        return { threadId: result.thread.id, model: result.model };
+        return { threadId: result.thread.id, model: result.model, modelProvider: result.modelProvider };
     }
 
     async resumeThread(opts?: {
         threadId?: string;
         model?: string;
+        modelProvider?: string;
         cwd?: string;
         approvalPolicy?: ApprovalPolicy;
         sandbox?: SandboxMode;
         mcpServers?: Record<string, unknown>;
-    }): Promise<{ threadId: string; model: string }> {
+    }): Promise<{ threadId: string; model: string; modelProvider: string }> {
         const threadId = opts?.threadId ?? this._threadId;
         if (!threadId) {
             throw new Error('No thread available to resume.');
@@ -873,7 +878,7 @@ export class CodexAppServerClient {
         const params: ResumeConversationParams = {
             threadId,
             model: opts?.model ?? defaults.model ?? null,
-            modelProvider: null,
+            modelProvider: opts?.modelProvider ?? defaults.modelProvider ?? null,
             cwd: opts?.cwd ?? defaults.cwd ?? process.cwd(),
             approvalPolicy: opts?.approvalPolicy ?? defaults.approvalPolicy ?? null,
             sandbox: opts?.sandbox ?? defaults.sandbox ?? null,
@@ -889,28 +894,30 @@ export class CodexAppServerClient {
         this.rawSubagentActivitySignaturesByItemId.clear();
         this.rememberThreadDefaults({
             model: opts?.model ?? defaults.model,
+            modelProvider: opts?.modelProvider ?? defaults.modelProvider,
             cwd: opts?.cwd ?? defaults.cwd,
             approvalPolicy: opts?.approvalPolicy ?? defaults.approvalPolicy,
             sandbox: opts?.sandbox ?? defaults.sandbox,
             mcpServers: opts?.mcpServers ?? defaults.mcpServers,
         });
         logger.debug('[CodexAppServer] Thread resumed:', this._threadId);
-        return { threadId: result.thread.id, model: result.model };
+        return { threadId: result.thread.id, model: result.model, modelProvider: result.modelProvider };
     }
 
     async forkThread(opts: {
         threadId: string;
         model?: string;
+        modelProvider?: string;
         cwd?: string;
         approvalPolicy?: ApprovalPolicy;
         sandbox?: SandboxMode;
         mcpServers?: Record<string, unknown>;
-    }): Promise<{ threadId: string; model: string; thread: Thread }> {
+    }): Promise<{ threadId: string; model: string; modelProvider?: string; thread: Thread }> {
         const defaults = this.threadDefaults ?? {};
         const params: ForkConversationParams = {
             threadId: opts.threadId,
             model: opts.model ?? defaults.model ?? null,
-            modelProvider: null,
+            modelProvider: opts.modelProvider ?? defaults.modelProvider ?? null,
             cwd: opts.cwd ?? defaults.cwd ?? process.cwd(),
             approvalPolicy: opts.approvalPolicy ?? defaults.approvalPolicy ?? null,
             sandbox: opts.sandbox ?? defaults.sandbox ?? null,
@@ -926,13 +933,14 @@ export class CodexAppServerClient {
         this._turnId = null;
         this.rememberThreadDefaults({
             model: opts.model ?? defaults.model,
+            modelProvider: opts.modelProvider ?? defaults.modelProvider,
             cwd: opts.cwd ?? defaults.cwd,
             approvalPolicy: opts.approvalPolicy ?? defaults.approvalPolicy,
             sandbox: opts.sandbox ?? defaults.sandbox,
             mcpServers: opts.mcpServers ?? defaults.mcpServers,
         });
         logger.debug('[CodexAppServer] Thread forked:', opts.threadId, '->', this._threadId);
-        return { threadId: result.thread.id, model: result.model, thread: result.thread };
+        return { threadId: result.thread.id, model: result.model, modelProvider: result.modelProvider, thread: result.thread };
     }
 
     async readThread(opts: {
