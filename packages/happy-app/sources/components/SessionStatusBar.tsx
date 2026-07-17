@@ -1,11 +1,11 @@
 import * as React from 'react';
-import { Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 import Svg, { Circle } from 'react-native-svg';
 import { hapticsLight } from './haptics';
 import { t } from '@/text';
-import type { EffortLevel, ModelMode, ModeOption } from './modelModeOptions';
+import { filterModeOptions, type EffortLevel, type ModelMode, type ModeOption } from './modelModeOptions';
 import {
     clampContextSize,
     getContextUsageLevel,
@@ -57,6 +57,7 @@ export function SessionStatusBar(props: SessionStatusBarProps) {
                 <StatusOptionMenu
                     options={availableModels}
                     selectedKey={props.modelMode?.key ?? null}
+                    searchPlaceholder="search models..."
                     onSelect={(model) => {
                         hapticsLight();
                         props.onModelModeChange?.(model);
@@ -114,14 +115,33 @@ function StatusOptionMenu<TOption extends ModeOption>(props: {
     options: TOption[];
     selectedKey: string | null;
     onSelect: (option: TOption) => void;
+    searchPlaceholder?: string;
 }) {
     const styles = stylesheet;
     const { theme } = useUnistyles();
+    const [query, setQuery] = React.useState('');
+    const visibleOptions = React.useMemo(
+        // ponytail: ScrollView eagerly renders every child; remove this cap
+        // when the option menu moves to a virtualized list.
+        () => filterModeOptions(props.options, query).slice(0, 50),
+        [props.options, query],
+    );
 
     return (
         <View style={styles.menu}>
+            {props.searchPlaceholder && props.options.length > 12 ? (
+                <TextInput
+                    value={query}
+                    onChangeText={setQuery}
+                    placeholder={props.searchPlaceholder}
+                    placeholderTextColor={theme.colors.textSecondary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={styles.menuSearchInput}
+                />
+            ) : null}
             <ScrollView style={styles.menuScroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-                {props.options.map((option) => {
+                {visibleOptions.map((option) => {
                     const isSelected = option.key === props.selectedKey;
 
                     return (
@@ -161,6 +181,9 @@ function StatusOptionMenu<TOption extends ModeOption>(props: {
                         </Pressable>
                     );
                 })}
+                {visibleOptions.length === 0 ? (
+                    <Text style={styles.menuEmptyText}>no results</Text>
+                ) : null}
             </ScrollView>
         </View>
     );
@@ -349,6 +372,26 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     menuScroll: {
         maxHeight: 280,
+        flexShrink: 1,
+    },
+    menuSearchInput: {
+        marginHorizontal: 8,
+        marginTop: 8,
+        paddingHorizontal: 10,
+        paddingVertical: 7,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: theme.colors.divider,
+        backgroundColor: theme.colors.input.background,
+        color: theme.colors.text,
+        fontSize: 13,
+    },
+    menuEmptyText: {
+        paddingHorizontal: 12,
+        paddingVertical: 16,
+        color: theme.colors.textSecondary,
+        fontSize: 13,
+        textAlign: 'center',
     },
     menuItem: {
         minHeight: 42,

@@ -80,7 +80,6 @@ function hasCodexSubagentReference(message: Record<string, unknown>): boolean {
     return false;
 }
 
-const DEFAULT_CODEX_MODEL = 'gpt-5.5';
 const DEFAULT_CODEX_EFFORT: ReasoningEffort = 'medium';
 const DEFAULT_CODEX_PERMISSION_MODE: PermissionMode = 'yolo';
 
@@ -270,7 +269,7 @@ export async function runCodex(opts: {
     // default for plain codex is yolo, and it must not wave through a
     // straggler approval after an abort.
     let currentPermissionModeExplicitlySet = false;
-    let currentModel: string | undefined = opts.model ?? DEFAULT_CODEX_MODEL;
+    let currentModel: string | undefined = opts.model;
     let currentEffort: ReasoningEffort | undefined = opts.effort ?? DEFAULT_CODEX_EFFORT;
     let currentAppendSystemPrompt: string | undefined = undefined;
 
@@ -281,7 +280,7 @@ export async function runCodex(opts: {
         // approval handler only trusting explicitly-picked modes.
         currentPermissionMode = initialPermissionMode;
         currentPermissionModeExplicitlySet = false;
-        currentModel = opts.model ?? DEFAULT_CODEX_MODEL;
+        currentModel = opts.model;
         currentEffort = opts.effort ?? DEFAULT_CODEX_EFFORT;
         currentAppendSystemPrompt = undefined;
         logger.debug('[Codex] Reset current mode defaults after abort');
@@ -864,6 +863,26 @@ export async function runCodex(opts: {
         logger.debug('[codex]: client.connect begin');
         await client.connect();
         logger.debug('[codex]: client.connect done');
+
+        void client.listModels().then((models) => {
+            if (models.length === 0) {
+                return;
+            }
+
+            session.updateMetadata((currentMetadata) => ({
+                ...currentMetadata,
+                models: models.map((model) => ({
+                    code: model.model,
+                    value: model.displayName || model.model,
+                    description: model.model,
+                })),
+                currentModelCode: models.find((model) => model.isDefault)?.model,
+            }));
+        }).catch((error) => {
+            // Older Codex versions may not expose model/list. The app keeps its
+            // hardcoded fallback list in that case.
+            logger.debug('[Codex] Failed to load model catalog:', error);
+        });
 
         if (opts.resumeThreadId) {
             await resumeExistingThread({

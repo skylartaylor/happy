@@ -1,6 +1,6 @@
 import { Ionicons, Octicons } from '@expo/vector-icons';
 import * as React from 'react';
-import { View, Platform, useWindowDimensions, ViewStyle, Text, ActivityIndicator, TouchableWithoutFeedback, Image as RNImage, Pressable } from 'react-native';
+import { View, Platform, useWindowDimensions, ViewStyle, Text, TextInput, ActivityIndicator, TouchableWithoutFeedback, Image as RNImage, Pressable } from 'react-native';
 import { Image } from 'expo-image';
 import { AgentInputAttachmentStrip } from './AgentInputAttachmentStrip';
 import type { AttachmentPreview } from '@/sync/attachmentTypes';
@@ -9,7 +9,7 @@ import { layout } from './layout';
 import { MultiTextInput, KeyPressEvent } from './MultiTextInput';
 import { Typography } from '@/constants/Typography';
 import { PermissionMode, ModelMode } from './PermissionModeSelector';
-import { EffortLevel } from './modelModeOptions';
+import { EffortLevel, filterModeOptions } from './modelModeOptions';
 import { hapticsLight, hapticsError } from './haptics';
 import { Shaker, ShakeInstance } from './Shaker';
 import { StatusDot } from './StatusDot';
@@ -169,6 +169,25 @@ const stylesheet = StyleSheet.create((theme, runtime) => ({
         paddingHorizontal: 16,
         paddingBottom: 4,
         ...Typography.default('semiBold'),
+    },
+    modelSearchInput: {
+        marginHorizontal: 16,
+        marginBottom: 6,
+        paddingHorizontal: 10,
+        paddingVertical: 7,
+        borderRadius: 8,
+        borderWidth: 1,
+        borderColor: theme.colors.divider,
+        backgroundColor: theme.colors.input.background,
+        color: theme.colors.text,
+        fontSize: 13,
+    },
+    modelSearchEmpty: {
+        paddingHorizontal: 16,
+        paddingVertical: 12,
+        color: theme.colors.textSecondary,
+        fontSize: 13,
+        textAlign: 'center',
     },
     overlayDivider: {
         height: 1,
@@ -771,6 +790,19 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
 
     // Settings modal state
     const [showSettings, setShowSettings] = React.useState(false);
+    const [modelSearch, setModelSearch] = React.useState('');
+    const visibleModels = React.useMemo(
+        // ponytail: FloatingOverlay eagerly renders every child; remove this
+        // cap when the settings list moves to a virtualized list.
+        () => filterModeOptions(availableModels, modelSearch).slice(0, 50),
+        [availableModels, modelSearch],
+    );
+
+    React.useEffect(() => {
+        if (!showSettings) {
+            setModelSearch('');
+        }
+    }, [showSettings]);
 
     // Handle settings button press
     const handleSettingsPress = React.useCallback(() => {
@@ -1041,8 +1073,19 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                         }}>
                                             {t('agentInput.model.title')}
                                         </Text>
+                                        {availableModels.length > 12 ? (
+                                            <TextInput
+                                                value={modelSearch}
+                                                onChangeText={setModelSearch}
+                                                placeholder="search models..."
+                                                placeholderTextColor={theme.colors.textSecondary}
+                                                autoCapitalize="none"
+                                                autoCorrect={false}
+                                                style={styles.modelSearchInput}
+                                            />
+                                        ) : null}
                                         {availableModels.length > 0 ? (
-                                            availableModels.map((model) => {
+                                            visibleModels.map((model) => {
                                                 const isSelected = props.modelMode?.key === model.key;
 
                                                 return (
@@ -1113,6 +1156,9 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                                 {t('agentInput.model.configureInCli')}
                                             </Text>
                                         )}
+                                        {availableModels.length > 0 && visibleModels.length === 0 ? (
+                                            <Text style={styles.modelSearchEmpty}>no results</Text>
+                                        ) : null}
                                     </View>
 
                                     {/* Effort Level Section — second column */}

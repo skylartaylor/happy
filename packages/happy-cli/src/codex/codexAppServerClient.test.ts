@@ -138,6 +138,55 @@ describe('CodexAppServerClient sandbox integration', () => {
         expect(new CodexAppServerClient().supportsGoalActions()).toBe(false);
     });
 
+    it('lists visible models across every app-server page', async () => {
+        const requests: MockRpcMessage[] = [];
+        const firstModel = {
+            id: 'openai/gpt-5.4',
+            model: 'openai/gpt-5.4',
+            displayName: 'OpenAI: GPT-5.4',
+            description: 'First model',
+            hidden: false,
+            isDefault: true,
+        };
+        const secondModel = {
+            id: 'anthropic/claude-sonnet-4.6',
+            model: 'anthropic/claude-sonnet-4.6',
+            displayName: 'Anthropic: Claude Sonnet 4.6',
+            description: 'Second model',
+            hidden: false,
+            isDefault: false,
+        };
+        const proc = createMockProcess({
+            onRequest: (msg, stdout) => {
+                requests.push(msg);
+                if (msg.method !== 'model/list' || msg.id == null) return;
+
+                const isSecondPage = msg.params?.cursor === 'page-2';
+                setTimeout(() => {
+                    pushJsonLine(stdout, {
+                        id: msg.id,
+                        result: isSecondPage
+                            ? { data: [firstModel, secondModel], nextCursor: null }
+                            : { data: [firstModel], nextCursor: 'page-2' },
+                    });
+                }, 0);
+            },
+        });
+        mockSpawn.mockImplementation(() => proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+
+        await expect(client.listModels()).resolves.toEqual([firstModel, secondModel]);
+        expect(requests.filter((request) => request.method === 'model/list').map((request) => request.params)).toEqual([
+            { cursor: null, limit: 100, includeHidden: false },
+            { cursor: 'page-2', limit: 100, includeHidden: false },
+        ]);
+
+        await client.disconnect();
+    });
+
     it('wraps transport when sandbox is enabled', async () => {
         // Dynamic import to ensure mocks are applied
         const { CodexAppServerClient } = await import('./codexAppServerClient');

@@ -46,6 +46,8 @@ import type {
     InputItem,
     ReasoningEffort,
     McpServerElicitationRequestResponse,
+    CodexModel,
+    ModelListResponse,
 } from './codexAppServerTypes';
 import type { SandboxConfig } from '@/persistence';
 import { initializeSandbox, wrapForMcpTransport } from '@/sandbox/manager';
@@ -785,6 +787,42 @@ export class CodexAppServerClient {
     }
 
     // ─── Thread management ──────────────────────────────────────
+
+    async listModels(): Promise<CodexModel[]> {
+        const models = new Map<string, CodexModel>();
+        const seenCursors = new Set<string>();
+        let cursor: string | null = null;
+
+        do {
+            const result = await this.request('model/list', {
+                cursor,
+                limit: 100,
+                includeHidden: false,
+            }) as ModelListResponse;
+
+            if (!Array.isArray(result.data)) {
+                throw new Error('Codex model/list returned an invalid response.');
+            }
+
+            for (const model of result.data) {
+                if (typeof model?.model === 'string' && model.model.length > 0 && !models.has(model.model)) {
+                    models.set(model.model, model);
+                }
+            }
+
+            cursor = typeof result.nextCursor === 'string' && result.nextCursor.length > 0
+                ? result.nextCursor
+                : null;
+            if (cursor && seenCursors.has(cursor)) {
+                throw new Error(`Codex model/list repeated cursor ${cursor}.`);
+            }
+            if (cursor) {
+                seenCursors.add(cursor);
+            }
+        } while (cursor);
+
+        return [...models.values()];
+    }
 
     async startThread(opts: {
         model?: string;
