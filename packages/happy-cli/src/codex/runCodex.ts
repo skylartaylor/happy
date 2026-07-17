@@ -1075,7 +1075,9 @@ export async function runCodex(opts: {
                         codexThreadId: startedThread.threadId,
                     }));
                 } else if (needsCodexProviderSwitch(activeModelProvider, modelSelection)) {
-                    const resumedThread = await client.resumeThread({
+                    // A Codex thread's provider is immutable. Forking preserves
+                    // its conversation while creating a thread on the selected provider.
+                    const forkedThread = await client.forkThread({
                         threadId: activeThreadId,
                         model: modelSelection.model,
                         modelProvider: modelSelection.modelProvider,
@@ -1084,11 +1086,16 @@ export async function runCodex(opts: {
                         sandbox: executionPolicy.sandbox,
                         mcpServers,
                     });
-                    activeThreadId = resumedThread.threadId;
-                    activeModelProvider = resumedThread.modelProvider;
+                    if (forkedThread.modelProvider !== modelSelection.modelProvider) {
+                        throw new Error(
+                            `Codex did not switch to the requested ${modelSelection.modelProvider} provider.`,
+                        );
+                    }
+                    activeThreadId = forkedThread.threadId;
+                    activeModelProvider = forkedThread.modelProvider;
                     session.updateMetadata((currentMetadata) => ({
                         ...currentMetadata,
-                        codexThreadId: resumedThread.threadId,
+                        codexThreadId: forkedThread.threadId,
                     }));
                 }
 

@@ -564,7 +564,7 @@ describe('CodexAppServerClient sandbox integration', () => {
                                     turns: [],
                                 },
                                 model: 'gpt-test',
-                                modelProvider: 'openai',
+                                modelProvider: 'openrouter',
                                 cwd: '/tmp/project',
                                 approvalPolicy: 'on-request',
                                 sandbox: { type: 'workspaceWrite' },
@@ -624,6 +624,8 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.connect();
         const forked = await client.forkThread({
             threadId: 'thread-source',
+            model: 'poolside/laguna-xs-2.1:free',
+            modelProvider: 'openrouter',
             cwd: '/tmp/project',
             approvalPolicy: 'on-request',
             sandbox: 'workspace-write',
@@ -640,11 +642,14 @@ describe('CodexAppServerClient sandbox integration', () => {
         });
 
         expect(forked.threadId).toBe('thread-forked');
+        expect(forked.modelProvider).toBe('openrouter');
         expect(read.thread.turns).toHaveLength(1);
         expect(rolledBack.thread.turns).toHaveLength(1);
         expect(injected).toEqual({});
         expect(requests.find((msg) => msg.method === 'thread/fork')?.params).toEqual(expect.objectContaining({
             threadId: 'thread-source',
+            model: 'poolside/laguna-xs-2.1:free',
+            modelProvider: 'openrouter',
             cwd: '/tmp/project',
             approvalPolicy: 'on-request',
             sandbox: 'workspace-write',
