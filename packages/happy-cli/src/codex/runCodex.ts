@@ -8,6 +8,7 @@ import {
     encodeCodexModelSelection,
     needsCodexProviderSwitch,
 } from './codexModelSelection';
+import { buildPortableCodexHistoryItems } from './codexProviderSwitch';
 import type { ReasoningEffort } from './codexAppServerTypes';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
@@ -1075,10 +1076,13 @@ export async function runCodex(opts: {
                         codexThreadId: startedThread.threadId,
                     }));
                 } else if (needsCodexProviderSwitch(activeModelProvider, modelSelection)) {
-                    // A Codex thread's provider is immutable. Forking preserves
-                    // its conversation while creating a thread on the selected provider.
-                    const forkedThread = await client.forkThread({
+                    // A thread's provider is immutable, and a native fork retains
+                    // provider-bound response/tool items that another provider cannot replay.
+                    const sourceThread = await client.readThread({
                         threadId: activeThreadId,
+                        includeTurns: true,
+                    });
+                    const switchedThread = await client.startThread({
                         model: modelSelection.model,
                         modelProvider: modelSelection.modelProvider,
                         cwd: process.cwd(),
@@ -1086,16 +1090,23 @@ export async function runCodex(opts: {
                         sandbox: executionPolicy.sandbox,
                         mcpServers,
                     });
-                    if (forkedThread.modelProvider !== modelSelection.modelProvider) {
+                    if (switchedThread.modelProvider !== modelSelection.modelProvider) {
                         throw new Error(
                             `Codex did not switch to the requested ${modelSelection.modelProvider} provider.`,
                         );
                     }
-                    activeThreadId = forkedThread.threadId;
-                    activeModelProvider = forkedThread.modelProvider;
+                    const historyItems = buildPortableCodexHistoryItems(sourceThread.thread);
+                    if (historyItems.length > 0) {
+                        await client.injectItems({
+                            threadId: switchedThread.threadId,
+                            items: historyItems,
+                        });
+                    }
+                    activeThreadId = switchedThread.threadId;
+                    activeModelProvider = switchedThread.modelProvider;
                     session.updateMetadata((currentMetadata) => ({
                         ...currentMetadata,
-                        codexThreadId: forkedThread.threadId,
+                        codexThreadId: switchedThread.threadId,
                     }));
                 }
 
