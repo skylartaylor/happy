@@ -29,3 +29,29 @@ export function getModePickerItems(options: ModePickerSource[]): NewSessionPicke
         ...(option.description ? { subtitle: option.description } : {}),
     }));
 }
+
+export function getLatestMachineModelMetadata(
+    sessions: Array<Session | string> | null,
+    machineId: string | null,
+    flavor: string,
+): Metadata | null {
+    if (!sessions || !machineId) return null;
+
+    let latest: Session | null = null;
+    for (const candidate of sessions) {
+        if (typeof candidate === 'string') continue;
+        const metadata = candidate.metadata;
+        if (
+            metadata?.machineId !== machineId
+            || metadata.flavor !== flavor
+            || !metadata.models?.length
+        ) {
+            continue;
+        }
+        if (!latest || candidate.updatedAt > latest.updatedAt) {
+            latest = candidate;
+        }
+    }
+    return latest?.metadata ?? null;
+}
+import type { Metadata, Session } from '@/sync/storageTypes';

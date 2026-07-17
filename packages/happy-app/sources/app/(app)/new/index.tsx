@@ -48,7 +48,7 @@ import { Modal } from '@/modal';
 import type { Machine, Session } from '@/sync/storageTypes';
 import {
     getHardcodedPermissionModes,
-    getHardcodedModelModes,
+    getAvailableModels,
     getEffortLevelsForModel,
     getSupportsWorktree,
     type PermissionMode,
@@ -57,7 +57,7 @@ import {
 } from '@/components/modelModeOptions';
 import { isRunningOnMac } from '@/utils/platform';
 import { getNewSessionSidebarLayout } from '@/utils/newSessionSidebarLayout';
-import { getAgentPickerItems, getModePickerItems } from '@/utils/newSessionPickerItems';
+import { getAgentPickerItems, getLatestMachineModelMetadata, getModePickerItems } from '@/utils/newSessionPickerItems';
 import { resolveAgentDefaultConfig } from '@/sync/agentDefaults';
 
 // Agent icon assets
@@ -635,6 +635,10 @@ function NewSessionScreen() {
         [allMachines, selectedMachineId],
     );
     const selectedHomeDir = selectedMachine?.metadata?.homeDir;
+    const latestMachineModelMetadata = React.useMemo(
+        () => getLatestMachineModelMetadata(sessions, selectedMachineId, selectedAgent),
+        [sessions, selectedMachineId, selectedAgent],
+    );
 
     // Build machine picker items: online first, then offline
     const machineItems = React.useMemo<PickerItem[]>(() => {
@@ -750,8 +754,8 @@ function NewSessionScreen() {
         [selectedAgent],
     );
     const modelModes = React.useMemo<ModelMode[]>(
-        () => getHardcodedModelModes(selectedAgent, t),
-        [selectedAgent],
+        () => getAvailableModels(selectedAgent, latestMachineModelMetadata, t),
+        [selectedAgent, latestMachineModelMetadata],
     );
 
     const currentModel = modelModes[modelIndex] ?? modelModes[0];
