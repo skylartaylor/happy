@@ -286,6 +286,7 @@ export type Metadata = {
   // `code` = protocol value ID, `value` = human label
   models?: Array<{ code: string; value: string; description?: string | null }>,
   currentModelCode?: string,
+  modelCatalogVersion?: number,
   operatingModes?: Array<{ code: string; value: string; description?: string | null }>,
   currentOperatingModeCode?: string,
   thoughtLevels?: Array<{ code: string; value: string; description?: string | null }>,

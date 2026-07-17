@@ -38,6 +38,7 @@ export function getLatestMachineModelMetadata(
     if (!sessions || !machineId) return null;
 
     let latest: Session | null = null;
+    let latestCatalogVersion = -1;
     for (const candidate of sessions) {
         if (typeof candidate === 'string') continue;
         const metadata = candidate.metadata;
@@ -48,8 +49,15 @@ export function getLatestMachineModelMetadata(
         ) {
             continue;
         }
-        if (!latest || candidate.updatedAt > latest.updatedAt) {
+        const catalogVersion = metadata.modelCatalogVersion
+            ?? (metadata.models.some((model) => /^(openai|openrouter)::/.test(model.code)) ? 1 : 0);
+        if (
+            !latest
+            || catalogVersion > latestCatalogVersion
+            || (catalogVersion === latestCatalogVersion && candidate.updatedAt > latest.updatedAt)
+        ) {
             latest = candidate;
+            latestCatalogVersion = catalogVersion;
         }
     }
     return latest?.metadata ?? null;

@@ -59,4 +59,35 @@ describe('new session picker items', () => {
             { code: 'openai/model', value: 'openai/model' },
         ]);
     });
+
+    it('prefers a provider-qualified catalog over a newer legacy session', () => {
+        const session = (updatedAt: number, code: string): Session => ({
+            id: `${updatedAt}`,
+            seq: 0,
+            createdAt: updatedAt,
+            updatedAt,
+            active: false,
+            activeAt: updatedAt,
+            metadataVersion: 1,
+            metadata: {
+                machineId: 'canary',
+                flavor: 'codex',
+                path: '/workspace',
+                host: 'canary',
+                models: [{ code, value: code }],
+            },
+            agentState: null,
+            agentStateVersion: 1,
+            thinking: false,
+            thinkingAt: updatedAt,
+            presence: updatedAt,
+        });
+
+        const metadata = getLatestMachineModelMetadata([
+            session(20, 'qwen/qwen3.6-flash'),
+            session(10, 'openrouter::qwen/qwen3.6-flash'),
+        ], 'canary', 'codex');
+
+        expect(metadata?.models?.[0].code).toBe('openrouter::qwen/qwen3.6-flash');
+    });
 });

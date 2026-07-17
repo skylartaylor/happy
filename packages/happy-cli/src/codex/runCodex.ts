@@ -929,6 +929,7 @@ export async function runCodex(opts: {
                 ...currentMetadata,
                 models,
                 currentModelCode,
+                modelCatalogVersion: 2,
             }));
         }).catch((error) => {
             // Older Codex versions may not expose model/list, and provider
