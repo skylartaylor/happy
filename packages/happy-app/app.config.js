@@ -90,6 +90,7 @@ export default {
             associatedDomains: variant === 'production' ? ["applinks:app.happy.engineering"] : []
         },
         android: {
+            versionCode: variant === 'preview' ? 2 : undefined,
             adaptiveIcon: {
                 foregroundImage: "./sources/assets/images/icon-adaptive.png",
                 monochromeImage: "./sources/assets/images/icon-monochrome.png",
@@ -205,12 +206,16 @@ export default {
                 }
             ]
         ],
-        updates: {
-            url: "https://u.expo.dev/4558dd3d-cd5a-47cd-bad9-e591a241cc06",
-            requestHeaders: {
-                "expo-channel-name": "production"
+        // Fork builds must keep their bundled JavaScript. Otherwise Expo can
+        // replace custom features with an upstream production OTA on launch.
+        updates: variant === 'production'
+            ? {
+                url: "https://u.expo.dev/4558dd3d-cd5a-47cd-bad9-e591a241cc06",
+                requestHeaders: {
+                    "expo-channel-name": "production"
+                }
             }
-        },
+            : { enabled: false },
         experiments: {
             typedRoutes: true
         },
