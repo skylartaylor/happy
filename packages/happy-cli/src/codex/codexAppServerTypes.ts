@@ -239,6 +239,17 @@ export type InterruptConversationResponse = {
     abortReason: TurnAbortReason;
 };
 
+export type TurnSteerParams = {
+    threadId: ThreadId;
+    input: InputItem[];
+    expectedTurnId: string;
+    clientUserMessageId?: string | null;
+};
+
+export type TurnSteerResponse = {
+    turnId: string;
+};
+
 // --- Approvals (server → client requests) ---
 
 export type ExecCommandApprovalParams = {

@@ -31,6 +31,8 @@ import type {
     RollbackConversationResponse,
     InjectItemsParams,
     InjectItemsResponse,
+    TurnSteerParams,
+    TurnSteerResponse,
     ThreadGoalSetParams,
     ThreadGoalSetResponse,
     ThreadGoalClearParams,
@@ -1243,6 +1245,42 @@ export class CodexAppServerClient {
         const aborted = await completion;
         if (timer) clearTimeout(timer);
         return { aborted };
+    }
+
+    /**
+     * Append user input to the active in-flight turn. Returns false when the
+     * turn ended before the steer could be accepted so the caller can queue a
+     * normal follow-up turn instead.
+     */
+    async steerTurn(prompt: string, opts?: {
+        extraInputItems?: InputItem[];
+    }): Promise<boolean> {
+        const pendingTurn = this.pendingTurnCompletion;
+        const expectedTurnId = pendingTurn?.turnId ?? this._turnId;
+        if (!this._threadId || !pendingTurn || !expectedTurnId) {
+            return false;
+        }
+
+        const extraInputItems = opts?.extraInputItems ?? [];
+        const input: InputItem[] = [];
+        if (prompt.length > 0 || extraInputItems.length === 0) {
+            input.push({ type: 'text', text: prompt });
+        }
+        input.push(...extraInputItems);
+
+        const params: TurnSteerParams = {
+            threadId: this._threadId,
+            input,
+            expectedTurnId,
+        };
+
+        try {
+            const result = await this.request('turn/steer', params) as TurnSteerResponse;
+            return result.turnId === expectedTurnId;
+        } catch (error) {
+            logger.debug('[CodexAppServer] turn/steer was not accepted; queueing a follow-up turn', error);
+            return false;
+        }
     }
 
     async interruptTurn(opts?: { timeoutMs?: number }): Promise<void> {

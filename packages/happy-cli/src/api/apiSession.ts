@@ -378,6 +378,19 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
+    /**
+     * Deliver a trusted local trigger through the same path as app-authored
+     * user text. This intentionally stays local to the active CLI process;
+     * callers use it for ephemeral wake-ups such as PR status changes.
+     */
+    injectLocalUserMessage(text: string) {
+        this.routeIncomingMessage({
+            role: 'user',
+            content: { type: 'text', text },
+            localKey: randomUUID(),
+        });
+    }
+
     onFileEvent(callback: (data: FileEventMessage) => void) {
         this.pendingFileEventCallback = callback;
         while (this.pendingFileEvents.length > 0) {

@@ -279,6 +279,8 @@ export async function runCodex(opts: {
     let currentModel: string | undefined = opts.model;
     let currentEffort: ReasoningEffort | undefined = opts.effort ?? DEFAULT_CODEX_EFFORT;
     let currentAppendSystemPrompt: string | undefined = undefined;
+    let activeTurnMode: EnhancedMode | null = null;
+    let thinking = false;
 
     const resetCurrentModeDefaults = () => {
         // Reset to the mode the session was launched with. Note this is NOT
@@ -378,6 +380,40 @@ export async function runCodex(opts: {
             appendSystemPrompt: messageAppendSystemPrompt,
             effort: messageEffort,
         };
+
+        if (
+            !isCodexClearText(message.content.text)
+            && activeTurnMode
+            && hashCodexEnhancedMode(activeTurnMode) === hashCodexEnhancedMode(enhancedMode)
+        ) {
+            const imageInputs = await prepareCodexImageInputItems(attachmentsForThisMessage, {
+                sessionId: session.sessionId,
+            });
+            const hasUserText = message.content.text.trim().length > 0;
+            if (
+                attachmentsForThisMessage.length > 0
+                && imageInputs.inputItems.length === 0
+                && !hasUserText
+            ) {
+                session.sendSessionEvent({
+                    type: 'message',
+                    message: 'No supported images were available to send to Codex.',
+                });
+                return;
+            }
+
+            const steered = await client.steerTurn(message.content.text, {
+                extraInputItems: imageInputs.inputItems,
+            });
+            if (steered) {
+                if (hasUserText) {
+                    messageBuffer.addMessage(message.content.text, 'user');
+                }
+                logger.debug('[Codex] User message steered into active turn');
+                return;
+            }
+        }
+
         const enqueueResult = enqueueCodexUserText({
             text: message.content.text,
             mode: enhancedMode,
@@ -393,7 +429,6 @@ export async function runCodex(opts: {
         });
     });
     session.onUserMessage(handleUserMessage);
-    let thinking = false;
     let currentTurnId: string | null = null;
     let codexStartedSubagents = new Set<string>();
     let codexActiveSubagents = new Set<string>();
@@ -852,6 +887,8 @@ export async function runCodex(opts: {
 
     // Start Happy MCP server (HTTP) and prepare STDIO bridge config for Codex
     const happyServer = await startHappyServer(session);
+    const previousSessionWakeUrl = process.env.HAPPY_SESSION_WAKE_URL;
+    process.env.HAPPY_SESSION_WAKE_URL = happyServer.wakeUrl;
     // Launch the bridge via `node <path>` (rather than relying on the .mjs shebang)
     // so it works on Windows, where Windows can't execute shebang scripts directly.
     // codex would otherwise fail to start the MCP server, the change_title tool would
@@ -1056,6 +1093,7 @@ export async function runCodex(opts: {
                     sandboxManagedByHappy,
                 );
                 activeTurnPermissionMode = message.mode.permissionMode;
+                activeTurnMode = message.mode;
 
                 // Start thread on first turn (thread persists across mode changes)
                 const modelSelection = decodeCodexModelSelection(message.mode.model);
@@ -1170,6 +1208,7 @@ export async function runCodex(opts: {
                 reasoningProcessor.abort();  // Use abort to properly finish any in-progress tool calls
                 diffProcessor.reset();
                 activeTurnPermissionMode = undefined;
+                activeTurnMode = null;
                 thinking = false;
                 session.keepAlive(thinking, 'remote');
                 emitReadyIfIdle({
@@ -1211,6 +1250,11 @@ export async function runCodex(opts: {
         // Stop Happy MCP server
         logger.debug('[codex]: happyServer.stop');
         happyServer.stop();
+        if (previousSessionWakeUrl === undefined) {
+            delete process.env.HAPPY_SESSION_WAKE_URL;
+        } else {
+            process.env.HAPPY_SESSION_WAKE_URL = previousSessionWakeUrl;
+        }
 
         // Clean up ink UI
         if (process.stdin.isTTY) {
