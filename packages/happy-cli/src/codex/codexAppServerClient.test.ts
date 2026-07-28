@@ -138,6 +138,55 @@ describe('CodexAppServerClient sandbox integration', () => {
         expect(new CodexAppServerClient().supportsGoalActions()).toBe(false);
     });
 
+    it('lists visible models across every app-server page', async () => {
+        const requests: MockRpcMessage[] = [];
+        const firstModel = {
+            id: 'openai/gpt-5.4',
+            model: 'openai/gpt-5.4',
+            displayName: 'OpenAI: GPT-5.4',
+            description: 'First model',
+            hidden: false,
+            isDefault: true,
+        };
+        const secondModel = {
+            id: 'anthropic/claude-sonnet-4.6',
+            model: 'anthropic/claude-sonnet-4.6',
+            displayName: 'Anthropic: Claude Sonnet 4.6',
+            description: 'Second model',
+            hidden: false,
+            isDefault: false,
+        };
+        const proc = createMockProcess({
+            onRequest: (msg, stdout) => {
+                requests.push(msg);
+                if (msg.method !== 'model/list' || msg.id == null) return;
+
+                const isSecondPage = msg.params?.cursor === 'page-2';
+                setTimeout(() => {
+                    pushJsonLine(stdout, {
+                        id: msg.id,
+                        result: isSecondPage
+                            ? { data: [firstModel, secondModel], nextCursor: null }
+                            : { data: [firstModel], nextCursor: 'page-2' },
+                    });
+                }, 0);
+            },
+        });
+        mockSpawn.mockImplementation(() => proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+
+        await expect(client.listModels()).resolves.toEqual([firstModel, secondModel]);
+        expect(requests.filter((request) => request.method === 'model/list').map((request) => request.params)).toEqual([
+            { cursor: null, limit: 100, includeHidden: false },
+            { cursor: 'page-2', limit: 100, includeHidden: false },
+        ]);
+
+        await client.disconnect();
+    });
+
     it('wraps transport when sandbox is enabled', async () => {
         // Dynamic import to ensure mocks are applied
         const { CodexAppServerClient } = await import('./codexAppServerClient');
@@ -158,6 +207,21 @@ describe('CodexAppServerClient sandbox integration', () => {
             }),
         );
         expect(client.sandboxEnabled).toBe(true);
+
+        await client.disconnect();
+    });
+
+    it('starts a catalog client with an explicit model provider', async () => {
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient(undefined, 'openai');
+
+        await client.connect();
+
+        expect(mockSpawn).toHaveBeenCalledWith(
+            'codex',
+            ['app-server', '--listen', 'stdio://', '-c', 'model_provider="openai"'],
+            expect.anything(),
+        );
 
         await client.disconnect();
     });
@@ -377,6 +441,91 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.disconnect();
     });
 
+    it('steers new user input into the active turn', async () => {
+        const requests: MockRpcMessage[] = [];
+        const proc = createMockProcess({
+            pid: 2050,
+            onRequest: (msg, stdout) => {
+                requests.push(msg);
+
+                if (msg.method === 'thread/start' && msg.id != null) {
+                    setTimeout(() => {
+                        pushJsonLine(stdout, {
+                            id: msg.id,
+                            result: {
+                                thread: { id: 'thread-steer', path: '/tmp/thread-steer' },
+                                model: 'gpt-test',
+                                modelProvider: 'openai',
+                                cwd: '/tmp/project',
+                                approvalPolicy: 'on-request',
+                                sandbox: { type: 'readOnly' },
+                                reasoningEffort: null,
+                            },
+                        });
+                    }, 0);
+                }
+
+                if (msg.method === 'turn/start' && msg.id != null) {
+                    setTimeout(() => {
+                        pushJsonLine(stdout, {
+                            id: msg.id,
+                            result: { turn: { id: 'turn-steer' } },
+                        });
+                        pushJsonLine(stdout, {
+                            method: 'codex/event',
+                            params: { msg: { type: 'task_started', turn_id: 'turn-steer' } },
+                        });
+                    }, 0);
+                }
+
+                if (msg.method === 'turn/steer' && msg.id != null) {
+                    setTimeout(() => {
+                        pushJsonLine(stdout, {
+                            id: msg.id,
+                            result: { turnId: 'turn-steer' },
+                        });
+                        pushJsonLine(stdout, {
+                            method: 'codex/event',
+                            params: { msg: { type: 'task_complete', turn_id: 'turn-steer' } },
+                        });
+                    }, 0);
+                }
+            },
+        });
+        mockSpawn.mockImplementationOnce(() => proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+
+        await expect(client.steerTurn('too early')).resolves.toBe(false);
+        const pendingTurn = client.sendTurnAndWait('watch the PR', { turnTimeoutMs: 5000 });
+        await waitFor(() => client.turnId === 'turn-steer');
+
+        await expect(client.steerTurn('stop watching and fix steering', {
+            extraInputItems: [{ type: 'localImage', path: '/tmp/screenshot.png' }],
+        })).resolves.toBe(true);
+        await expect(pendingTurn).resolves.toEqual({ aborted: false });
+
+        expect(requests.filter((msg) => msg.method === 'turn/steer')).toHaveLength(1);
+        expect(requests.find((msg) => msg.method === 'turn/steer')?.params).toEqual({
+            threadId: 'thread-steer',
+            expectedTurnId: 'turn-steer',
+            input: [
+                { type: 'text', text: 'stop watching and fix steering' },
+                { type: 'localImage', path: '/tmp/screenshot.png' },
+            ],
+        });
+
+        await client.disconnect();
+    });
+
     it('force-restarts promptly when turn interrupt RPC does not respond', async () => {
         const firstProcessRequests: MockRpcMessage[] = [];
         const secondProcessRequests: MockRpcMessage[] = [];
@@ -500,7 +649,7 @@ describe('CodexAppServerClient sandbox integration', () => {
                                     turns: [],
                                 },
                                 model: 'gpt-test',
-                                modelProvider: 'openai',
+                                modelProvider: 'openrouter',
                                 cwd: '/tmp/project',
                                 approvalPolicy: 'on-request',
                                 sandbox: { type: 'workspaceWrite' },
@@ -560,6 +709,8 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.connect();
         const forked = await client.forkThread({
             threadId: 'thread-source',
+            model: 'poolside/laguna-xs-2.1:free',
+            modelProvider: 'openrouter',
             cwd: '/tmp/project',
             approvalPolicy: 'on-request',
             sandbox: 'workspace-write',
@@ -576,11 +727,14 @@ describe('CodexAppServerClient sandbox integration', () => {
         });
 
         expect(forked.threadId).toBe('thread-forked');
+        expect(forked.modelProvider).toBe('openrouter');
         expect(read.thread.turns).toHaveLength(1);
         expect(rolledBack.thread.turns).toHaveLength(1);
         expect(injected).toEqual({});
         expect(requests.find((msg) => msg.method === 'thread/fork')?.params).toEqual(expect.objectContaining({
             threadId: 'thread-source',
+            model: 'poolside/laguna-xs-2.1:free',
+            modelProvider: 'openrouter',
             cwd: '/tmp/project',
             approvalPolicy: 'on-request',
             sandbox: 'workspace-write',
@@ -663,6 +817,60 @@ describe('CodexAppServerClient sandbox integration', () => {
 
         expect(client.threadId).toBe('thread-2');
         expect(requests.filter((msg) => msg.method === 'thread/start')).toHaveLength(2);
+
+        await client.disconnect();
+    });
+
+    it('passes model providers through start and resume', async () => {
+        const requests: MockRpcMessage[] = [];
+        const proc = createMockProcess({
+            pid: 2701,
+            onRequest: (msg, stdout) => {
+                requests.push(msg);
+                if ((msg.method === 'thread/start' || msg.method === 'thread/resume') && msg.id != null) {
+                    const params = msg.params as { model: string; modelProvider: string };
+                    setTimeout(() => {
+                        pushJsonLine(stdout, {
+                            id: msg.id,
+                            result: {
+                                thread: { id: 'thread-provider', path: '/tmp/thread-provider' },
+                                model: params.model,
+                                modelProvider: params.modelProvider,
+                                cwd: '/tmp/project',
+                                approvalPolicy: 'on-request',
+                                sandbox: { type: 'readOnly' },
+                                reasoningEffort: null,
+                            },
+                        });
+                    }, 0);
+                }
+            },
+        });
+        mockSpawn.mockImplementation(() => proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+
+        await client.connect();
+        await expect(client.startThread({
+            model: 'gpt-test',
+            modelProvider: 'openai',
+            cwd: '/tmp/project',
+        })).resolves.toMatchObject({ modelProvider: 'openai' });
+        await expect(client.resumeThread({
+            model: 'z-ai/glm-5.2',
+            modelProvider: 'openrouter',
+        })).resolves.toMatchObject({ modelProvider: 'openrouter' });
+
+        expect(requests.find((msg) => msg.method === 'thread/start')?.params).toMatchObject({
+            model: 'gpt-test',
+            modelProvider: 'openai',
+        });
+        expect(requests.find((msg) => msg.method === 'thread/resume')?.params).toMatchObject({
+            threadId: 'thread-provider',
+            model: 'z-ai/glm-5.2',
+            modelProvider: 'openrouter',
+        });
 
         await client.disconnect();
     });

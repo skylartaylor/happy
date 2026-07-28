@@ -9,6 +9,7 @@ import {
     getDefaultEffortKey,
     getDefaultModelKey,
     getDefaultPermissionModeKey,
+    filterModeOptions,
     mapMetadataOptions,
     resolveCurrentOption,
 } from './modelModeOptions';
@@ -24,6 +25,18 @@ describe('modelModeOptions', () => {
             { key: 'm1', name: 'Model One', description: 'Primary model' },
             { key: 'm2', name: 'Model Two', description: null },
         ]);
+    });
+
+    it('filters model options by display name, key, or description', () => {
+        const models = [
+            { key: 'anthropic/claude-sonnet-4.6', name: 'Anthropic: Claude Sonnet 4.6', description: 'balanced' },
+            { key: 'openai/gpt-5.4', name: 'OpenAI: GPT-5.4', description: 'coding model' },
+        ];
+
+        expect(filterModeOptions(models, 'sonnet')).toEqual([models[0]]);
+        expect(filterModeOptions(models, 'openai/')).toEqual([models[1]]);
+        expect(filterModeOptions(models, 'CODING')).toEqual([models[1]]);
+        expect(filterModeOptions(models, '  ')).toBe(models);
     });
 
     it('builds claude permission fallbacks with translated names', () => {
@@ -72,7 +85,7 @@ describe('modelModeOptions', () => {
         expect(getDefaultModelKey('claude')).toBe('opus');
         expect(getDefaultEffortKey('claude')).toBe('medium');
         expect(getDefaultPermissionModeKey('codex')).toBe('yolo');
-        expect(getDefaultModelKey('codex')).toBe('gpt-5.5');
+        expect(getDefaultModelKey('codex')).toBe('default');
         expect(getDefaultEffortKey('codex')).toBe('medium');
     });
 

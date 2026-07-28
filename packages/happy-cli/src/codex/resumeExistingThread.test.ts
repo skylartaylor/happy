@@ -8,6 +8,7 @@ describe('resumeExistingThread', () => {
             resumeThread: vi.fn().mockResolvedValue({
                 threadId: '019ccca2-1a77-7481-9873-de72f3464372',
                 model: 'gpt-5.4',
+                modelProvider: 'openai',
             }),
         };
         const metadataHandlers: Array<(metadata: any) => any> = [];
@@ -31,9 +32,12 @@ describe('resumeExistingThread', () => {
         expect(result).toEqual({
             threadId: '019ccca2-1a77-7481-9873-de72f3464372',
             model: 'gpt-5.4',
+            modelProvider: 'openai',
         });
         expect(client.resumeThread).toHaveBeenCalledWith({
             threadId: '019ccca2-1a77-7481-9873-de72f3464372',
+            model: undefined,
+            modelProvider: undefined,
             cwd: '/tmp/project',
             mcpServers: { happy: { command: 'happy-mcp' } },
         });

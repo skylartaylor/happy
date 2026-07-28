@@ -31,6 +31,8 @@ import type {
     RollbackConversationResponse,
     InjectItemsParams,
     InjectItemsResponse,
+    TurnSteerParams,
+    TurnSteerResponse,
     ThreadGoalSetParams,
     ThreadGoalSetResponse,
     ThreadGoalClearParams,
@@ -46,6 +48,8 @@ import type {
     InputItem,
     ReasoningEffort,
     McpServerElicitationRequestResponse,
+    CodexModel,
+    ModelListResponse,
 } from './codexAppServerTypes';
 import type { SandboxConfig } from '@/persistence';
 import { initializeSandbox, wrapForMcpTransport } from '@/sandbox/manager';
@@ -218,6 +222,7 @@ export class CodexAppServerClient {
     private processEpoch = 0;
     private connected = false;
     private sandboxConfig?: SandboxConfig;
+    private modelProviderOverride?: 'openai' | 'openrouter';
     private sandboxCleanup: (() => Promise<void>) | null = null;
     public sandboxEnabled = false;
 
@@ -226,6 +231,7 @@ export class CodexAppServerClient {
     private _turnId: string | null = null;
     private threadDefaults: {
         model?: string;
+        modelProvider?: string;
         cwd?: string;
         approvalPolicy?: ApprovalPolicy;
         sandbox?: SandboxMode;
@@ -257,8 +263,9 @@ export class CodexAppServerClient {
     private eventHandler: ((msg: EventMsg) => void) | null = null;
     private approvalHandler: ApprovalHandler | null = null;
 
-    constructor(sandboxConfig?: SandboxConfig) {
+    constructor(sandboxConfig?: SandboxConfig, modelProviderOverride?: 'openai' | 'openrouter') {
         this.sandboxConfig = sandboxConfig;
+        this.modelProviderOverride = modelProviderOverride;
     }
 
     get threadId(): string | null {
@@ -606,13 +613,17 @@ export class CodexAppServerClient {
         }
 
         let command = 'codex';
-        let args = ['app-server', '--listen', 'stdio://'];
+        const appServerArgs = ['app-server', '--listen', 'stdio://'];
+        if (this.modelProviderOverride) {
+            appServerArgs.push('-c', `model_provider="${this.modelProviderOverride}"`);
+        }
+        let args = appServerArgs;
         this.sandboxEnabled = false;
 
         if (this.sandboxConfig?.enabled && process.platform !== 'win32') {
             try {
                 this.sandboxCleanup = await initializeSandbox(this.sandboxConfig, process.cwd());
-                const wrapped = await wrapForMcpTransport('codex', ['app-server', '--listen', 'stdio://']);
+                const wrapped = await wrapForMcpTransport('codex', appServerArgs);
                 command = wrapped.command;
                 args = wrapped.args;
                 this.sandboxEnabled = true;
@@ -770,6 +781,7 @@ export class CodexAppServerClient {
 
     private rememberThreadDefaults(opts: {
         model?: string;
+        modelProvider?: string;
         cwd?: string;
         approvalPolicy?: ApprovalPolicy;
         sandbox?: SandboxMode;
@@ -777,6 +789,7 @@ export class CodexAppServerClient {
     }): void {
         this.threadDefaults = {
             model: opts.model,
+            modelProvider: opts.modelProvider,
             cwd: opts.cwd,
             approvalPolicy: opts.approvalPolicy,
             sandbox: opts.sandbox,
@@ -786,16 +799,53 @@ export class CodexAppServerClient {
 
     // ─── Thread management ──────────────────────────────────────
 
+    async listModels(): Promise<CodexModel[]> {
+        const models = new Map<string, CodexModel>();
+        const seenCursors = new Set<string>();
+        let cursor: string | null = null;
+
+        do {
+            const result = await this.request('model/list', {
+                cursor,
+                limit: 100,
+                includeHidden: false,
+            }) as ModelListResponse;
+
+            if (!Array.isArray(result.data)) {
+                throw new Error('Codex model/list returned an invalid response.');
+            }
+
+            for (const model of result.data) {
+                if (typeof model?.model === 'string' && model.model.length > 0 && !models.has(model.model)) {
+                    models.set(model.model, model);
+                }
+            }
+
+            cursor = typeof result.nextCursor === 'string' && result.nextCursor.length > 0
+                ? result.nextCursor
+                : null;
+            if (cursor && seenCursors.has(cursor)) {
+                throw new Error(`Codex model/list repeated cursor ${cursor}.`);
+            }
+            if (cursor) {
+                seenCursors.add(cursor);
+            }
+        } while (cursor);
+
+        return [...models.values()];
+    }
+
     async startThread(opts: {
         model?: string;
+        modelProvider?: string;
         cwd?: string;
         approvalPolicy?: ApprovalPolicy;
         sandbox?: SandboxMode;
         mcpServers?: Record<string, unknown>;
-    }): Promise<{ threadId: string; model: string }> {
+    }): Promise<{ threadId: string; model: string; modelProvider: string }> {
         const params: NewConversationParams = {
             model: opts.model ?? null,
-            modelProvider: null,
+            modelProvider: opts.modelProvider ?? null,
             profile: null,
             cwd: opts.cwd ?? process.cwd(),
             approvalPolicy: opts.approvalPolicy ?? null,
@@ -815,17 +865,18 @@ export class CodexAppServerClient {
         this.rawSubagentActivitySignaturesByItemId.clear();
         this.rememberThreadDefaults(opts);
         logger.debug('[CodexAppServer] Thread started:', this._threadId);
-        return { threadId: result.thread.id, model: result.model };
+        return { threadId: result.thread.id, model: result.model, modelProvider: result.modelProvider };
     }
 
     async resumeThread(opts?: {
         threadId?: string;
         model?: string;
+        modelProvider?: string;
         cwd?: string;
         approvalPolicy?: ApprovalPolicy;
         sandbox?: SandboxMode;
         mcpServers?: Record<string, unknown>;
-    }): Promise<{ threadId: string; model: string }> {
+    }): Promise<{ threadId: string; model: string; modelProvider: string }> {
         const threadId = opts?.threadId ?? this._threadId;
         if (!threadId) {
             throw new Error('No thread available to resume.');
@@ -835,7 +886,7 @@ export class CodexAppServerClient {
         const params: ResumeConversationParams = {
             threadId,
             model: opts?.model ?? defaults.model ?? null,
-            modelProvider: null,
+            modelProvider: opts?.modelProvider ?? defaults.modelProvider ?? null,
             cwd: opts?.cwd ?? defaults.cwd ?? process.cwd(),
             approvalPolicy: opts?.approvalPolicy ?? defaults.approvalPolicy ?? null,
             sandbox: opts?.sandbox ?? defaults.sandbox ?? null,
@@ -851,28 +902,30 @@ export class CodexAppServerClient {
         this.rawSubagentActivitySignaturesByItemId.clear();
         this.rememberThreadDefaults({
             model: opts?.model ?? defaults.model,
+            modelProvider: opts?.modelProvider ?? defaults.modelProvider,
             cwd: opts?.cwd ?? defaults.cwd,
             approvalPolicy: opts?.approvalPolicy ?? defaults.approvalPolicy,
             sandbox: opts?.sandbox ?? defaults.sandbox,
             mcpServers: opts?.mcpServers ?? defaults.mcpServers,
         });
         logger.debug('[CodexAppServer] Thread resumed:', this._threadId);
-        return { threadId: result.thread.id, model: result.model };
+        return { threadId: result.thread.id, model: result.model, modelProvider: result.modelProvider };
     }
 
     async forkThread(opts: {
         threadId: string;
         model?: string;
+        modelProvider?: string;
         cwd?: string;
         approvalPolicy?: ApprovalPolicy;
         sandbox?: SandboxMode;
         mcpServers?: Record<string, unknown>;
-    }): Promise<{ threadId: string; model: string; thread: Thread }> {
+    }): Promise<{ threadId: string; model: string; modelProvider?: string; thread: Thread }> {
         const defaults = this.threadDefaults ?? {};
         const params: ForkConversationParams = {
             threadId: opts.threadId,
             model: opts.model ?? defaults.model ?? null,
-            modelProvider: null,
+            modelProvider: opts.modelProvider ?? defaults.modelProvider ?? null,
             cwd: opts.cwd ?? defaults.cwd ?? process.cwd(),
             approvalPolicy: opts.approvalPolicy ?? defaults.approvalPolicy ?? null,
             sandbox: opts.sandbox ?? defaults.sandbox ?? null,
@@ -888,13 +941,14 @@ export class CodexAppServerClient {
         this._turnId = null;
         this.rememberThreadDefaults({
             model: opts.model ?? defaults.model,
+            modelProvider: opts.modelProvider ?? defaults.modelProvider,
             cwd: opts.cwd ?? defaults.cwd,
             approvalPolicy: opts.approvalPolicy ?? defaults.approvalPolicy,
             sandbox: opts.sandbox ?? defaults.sandbox,
             mcpServers: opts.mcpServers ?? defaults.mcpServers,
         });
         logger.debug('[CodexAppServer] Thread forked:', opts.threadId, '->', this._threadId);
-        return { threadId: result.thread.id, model: result.model, thread: result.thread };
+        return { threadId: result.thread.id, model: result.model, modelProvider: result.modelProvider, thread: result.thread };
     }
 
     async readThread(opts: {
@@ -1191,6 +1245,42 @@ export class CodexAppServerClient {
         const aborted = await completion;
         if (timer) clearTimeout(timer);
         return { aborted };
+    }
+
+    /**
+     * Append user input to the active in-flight turn. Returns false when the
+     * turn ended before the steer could be accepted so the caller can queue a
+     * normal follow-up turn instead.
+     */
+    async steerTurn(prompt: string, opts?: {
+        extraInputItems?: InputItem[];
+    }): Promise<boolean> {
+        const pendingTurn = this.pendingTurnCompletion;
+        const expectedTurnId = pendingTurn?.turnId ?? this._turnId;
+        if (!this._threadId || !pendingTurn || !expectedTurnId) {
+            return false;
+        }
+
+        const extraInputItems = opts?.extraInputItems ?? [];
+        const input: InputItem[] = [];
+        if (prompt.length > 0 || extraInputItems.length === 0) {
+            input.push({ type: 'text', text: prompt });
+        }
+        input.push(...extraInputItems);
+
+        const params: TurnSteerParams = {
+            threadId: this._threadId,
+            input,
+            expectedTurnId,
+        };
+
+        try {
+            const result = await this.request('turn/steer', params) as TurnSteerResponse;
+            return result.turnId === expectedTurnId;
+        } catch (error) {
+            logger.debug('[CodexAppServer] turn/steer was not accepted; queueing a follow-up turn', error);
+            return false;
+        }
     }
 
     async interruptTurn(opts?: { timeoutMs?: number }): Promise<void> {

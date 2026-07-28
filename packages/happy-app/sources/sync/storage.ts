@@ -24,6 +24,7 @@ import { Profile } from "./profile";
 import { UserProfile, RelationshipUpdatedEvent } from "./friendTypes";
 import { loadSettings, loadLocalSettings, saveLocalSettings, saveSettings, loadPurchases, savePurchases, loadProfile, saveProfile, loadSessionDrafts, saveSessionDrafts } from "./persistence";
 import { isAgentModePushPending } from "./agentModesPending";
+import { preserveNewerSessionPayload } from './mergeSessionSnapshot';
 import type { CustomerInfo } from './revenueCat/types';
 import React from "react";
 import { sync } from "./sync";
@@ -397,6 +398,8 @@ export const storage = create<StorageState>()((set, get) => {
 
             // Update sessions with calculated presence using centralized resolver
             sessions.forEach(session => {
+                const existingSession = state.sessions[session.id];
+                const versionedPayload = preserveNewerSessionPayload(existingSession, session);
                 // Use centralized resolver for consistent state management
                 const presence = resolveSessionOnlineState(session);
 
@@ -412,12 +415,12 @@ export const storage = create<StorageState>()((set, get) => {
                 // would bounce the fresh local pick back. Metadata without
                 // the field keeps the local value.
                 const resolveModePick = (field: 'permissionMode' | 'modelMode' | 'effortLevel'): string | null => {
-                    const existing = state.sessions[session.id]?.[field] ?? null;
+                    const existing = existingSession?.[field] ?? null;
                     if (isAgentModePushPending(session.id, field)) {
                         return existing;
                     }
-                    return session.metadata && session.metadata[field] !== undefined
-                        ? session.metadata[field] ?? null
+                    return versionedPayload.metadata && versionedPayload.metadata[field] !== undefined
+                        ? versionedPayload.metadata[field] ?? null
                         : existing;
                 };
                 const resolvedPermissionMode = resolveModePick('permissionMode');
@@ -426,6 +429,7 @@ export const storage = create<StorageState>()((set, get) => {
 
                 mergedSessions[session.id] = {
                     ...session,
+                    ...versionedPayload,
                     presence,
                     draft: existingDraft || savedDraft || session.draft || null,
                     permissionMode: resolvedPermissionMode,

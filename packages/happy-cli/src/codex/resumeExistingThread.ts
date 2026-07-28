@@ -3,9 +3,11 @@ import { trimIdent } from '@/utils/trimIdent';
 type ResumeThreadClient = {
     resumeThread: (opts: {
         threadId: string;
+        model?: string;
+        modelProvider?: string;
         cwd: string;
         mcpServers: Record<string, unknown>;
-    }) => Promise<{ threadId: string; model: string }>;
+    }) => Promise<{ threadId: string; model: string; modelProvider: string }>;
 };
 
 type ResumeThreadSession = {
@@ -22,12 +24,16 @@ export async function resumeExistingThread(opts: {
     session: ResumeThreadSession;
     messageBuffer: ResumeThreadMessageBuffer;
     threadId: string;
+    model?: string;
+    modelProvider?: string;
     cwd: string;
     mcpServers: Record<string, unknown>;
-}): Promise<{ threadId: string; model: string }> {
+}): Promise<{ threadId: string; model: string; modelProvider: string }> {
     try {
         const resumedThread = await opts.client.resumeThread({
             threadId: opts.threadId,
+            model: opts.model,
+            modelProvider: opts.modelProvider,
             cwd: opts.cwd,
             mcpServers: opts.mcpServers,
         });

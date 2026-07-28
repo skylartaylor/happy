@@ -14,6 +14,22 @@ export type InitializeParams = {
 
 export type InitializeResponse = { userAgent: string };
 
+// --- Models ---
+
+export type CodexModel = {
+    id: string;
+    model: string;
+    displayName: string;
+    description: string;
+    hidden: boolean;
+    isDefault: boolean;
+};
+
+export type ModelListResponse = {
+    data: CodexModel[];
+    nextCursor: string | null;
+};
+
 // --- Thread lifecycle ---
 
 export type NewConversationParams = {
@@ -221,6 +237,17 @@ export type InterruptConversationParams = {
 
 export type InterruptConversationResponse = {
     abortReason: TurnAbortReason;
+};
+
+export type TurnSteerParams = {
+    threadId: ThreadId;
+    input: InputItem[];
+    expectedTurnId: string;
+    clientUserMessageId?: string | null;
+};
+
+export type TurnSteerResponse = {
+    turnId: string;
 };
 
 // --- Approvals (server → client requests) ---

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { getAgentPickerItems, getModePickerItems } from './newSessionPickerItems';
+import { getAgentPickerItems, getLatestMachineModelMetadata, getModePickerItems } from './newSessionPickerItems';
+import type { Session } from '@/sync/storageTypes';
 
 describe('new session picker items', () => {
     it('maps agents to picker item labels', () => {
@@ -20,5 +21,73 @@ describe('new session picker items', () => {
             { key: 'default', label: 'default model' },
             { key: 'opus', label: 'opus 4.7', subtitle: 'larger context' },
         ]);
+    });
+
+    it('uses the newest model catalog for the selected machine and agent', () => {
+        const session = (updatedAt: number, machineId: string, flavor: string, code: string): Session => ({
+            id: `${machineId}-${flavor}-${updatedAt}`,
+            seq: 0,
+            createdAt: updatedAt,
+            updatedAt,
+            active: false,
+            activeAt: updatedAt,
+            metadataVersion: 1,
+            metadata: {
+                machineId,
+                flavor,
+                path: '/workspace',
+                host: machineId,
+                models: [{ code, value: code }],
+            },
+            agentState: null,
+            agentStateVersion: 1,
+            thinking: false,
+            thinkingAt: updatedAt,
+            presence: updatedAt,
+        });
+        const sessions = [
+            session(1, 'openrouter', 'codex', 'old/model'),
+            session(3, 'subscription', 'codex', 'openai/model'),
+            session(2, 'openrouter', 'claude', 'anthropic/model'),
+            session(4, 'openrouter', 'codex', 'new/model'),
+        ];
+
+        expect(getLatestMachineModelMetadata(sessions, 'openrouter', 'codex')?.models).toEqual([
+            { code: 'new/model', value: 'new/model' },
+        ]);
+        expect(getLatestMachineModelMetadata(sessions, 'subscription', 'codex')?.models).toEqual([
+            { code: 'openai/model', value: 'openai/model' },
+        ]);
+    });
+
+    it('prefers a provider-qualified catalog over a newer legacy session', () => {
+        const session = (updatedAt: number, code: string): Session => ({
+            id: `${updatedAt}`,
+            seq: 0,
+            createdAt: updatedAt,
+            updatedAt,
+            active: false,
+            activeAt: updatedAt,
+            metadataVersion: 1,
+            metadata: {
+                machineId: 'canary',
+                flavor: 'codex',
+                path: '/workspace',
+                host: 'canary',
+                models: [{ code, value: code }],
+            },
+            agentState: null,
+            agentStateVersion: 1,
+            thinking: false,
+            thinkingAt: updatedAt,
+            presence: updatedAt,
+        });
+
+        const metadata = getLatestMachineModelMetadata([
+            session(20, 'qwen/qwen3.6-flash'),
+            session(10, 'openrouter::qwen/qwen3.6-flash'),
+        ], 'canary', 'codex');
+
+        expect(metadata?.models?.[0].code).toBe('openrouter::qwen/qwen3.6-flash');
     });
 });

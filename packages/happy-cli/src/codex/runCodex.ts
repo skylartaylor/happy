@@ -2,6 +2,13 @@ import { render } from "ink";
 import React from "react";
 import { ApiClient } from '@/api/api';
 import { CodexAppServerClient } from './codexAppServerClient';
+import { listOpenRouterModels } from './openRouterModels';
+import {
+    decodeCodexModelSelection,
+    encodeCodexModelSelection,
+    needsCodexProviderSwitch,
+} from './codexModelSelection';
+import { buildPortableCodexHistoryItems } from './codexProviderSwitch';
 import type { ReasoningEffort } from './codexAppServerTypes';
 import { CodexPermissionHandler } from './utils/permissionHandler';
 import { ReasoningProcessor } from './utils/reasoningProcessor';
@@ -80,7 +87,6 @@ function hasCodexSubagentReference(message: Record<string, unknown>): boolean {
     return false;
 }
 
-const DEFAULT_CODEX_MODEL = 'gpt-5.5';
 const DEFAULT_CODEX_EFFORT: ReasoningEffort = 'medium';
 const DEFAULT_CODEX_PERMISSION_MODE: PermissionMode = 'yolo';
 
@@ -270,9 +276,11 @@ export async function runCodex(opts: {
     // default for plain codex is yolo, and it must not wave through a
     // straggler approval after an abort.
     let currentPermissionModeExplicitlySet = false;
-    let currentModel: string | undefined = opts.model ?? DEFAULT_CODEX_MODEL;
+    let currentModel: string | undefined = opts.model;
     let currentEffort: ReasoningEffort | undefined = opts.effort ?? DEFAULT_CODEX_EFFORT;
     let currentAppendSystemPrompt: string | undefined = undefined;
+    let activeTurnMode: EnhancedMode | null = null;
+    let thinking = false;
 
     const resetCurrentModeDefaults = () => {
         // Reset to the mode the session was launched with. Note this is NOT
@@ -281,7 +289,7 @@ export async function runCodex(opts: {
         // approval handler only trusting explicitly-picked modes.
         currentPermissionMode = initialPermissionMode;
         currentPermissionModeExplicitlySet = false;
-        currentModel = opts.model ?? DEFAULT_CODEX_MODEL;
+        currentModel = opts.model;
         currentEffort = opts.effort ?? DEFAULT_CODEX_EFFORT;
         currentAppendSystemPrompt = undefined;
         logger.debug('[Codex] Reset current mode defaults after abort');
@@ -372,6 +380,40 @@ export async function runCodex(opts: {
             appendSystemPrompt: messageAppendSystemPrompt,
             effort: messageEffort,
         };
+
+        if (
+            !isCodexClearText(message.content.text)
+            && activeTurnMode
+            && hashCodexEnhancedMode(activeTurnMode) === hashCodexEnhancedMode(enhancedMode)
+        ) {
+            const imageInputs = await prepareCodexImageInputItems(attachmentsForThisMessage, {
+                sessionId: session.sessionId,
+            });
+            const hasUserText = message.content.text.trim().length > 0;
+            if (
+                attachmentsForThisMessage.length > 0
+                && imageInputs.inputItems.length === 0
+                && !hasUserText
+            ) {
+                session.sendSessionEvent({
+                    type: 'message',
+                    message: 'No supported images were available to send to Codex.',
+                });
+                return;
+            }
+
+            const steered = await client.steerTurn(message.content.text, {
+                extraInputItems: imageInputs.inputItems,
+            });
+            if (steered) {
+                if (hasUserText) {
+                    messageBuffer.addMessage(message.content.text, 'user');
+                }
+                logger.debug('[Codex] User message steered into active turn');
+                return;
+            }
+        }
+
         const enqueueResult = enqueueCodexUserText({
             text: message.content.text,
             mode: enhancedMode,
@@ -387,7 +429,6 @@ export async function runCodex(opts: {
         });
     });
     session.onUserMessage(handleUserMessage);
-    let thinking = false;
     let currentTurnId: string | null = null;
     let codexStartedSubagents = new Set<string>();
     let codexActiveSubagents = new Set<string>();
@@ -846,6 +887,8 @@ export async function runCodex(opts: {
 
     // Start Happy MCP server (HTTP) and prepare STDIO bridge config for Codex
     const happyServer = await startHappyServer(session);
+    const previousSessionWakeUrl = process.env.HAPPY_SESSION_WAKE_URL;
+    process.env.HAPPY_SESSION_WAKE_URL = happyServer.wakeUrl;
     // Launch the bridge via `node <path>` (rather than relying on the .mjs shebang)
     // so it works on Windows, where Windows can't execute shebang scripts directly.
     // codex would otherwise fail to start the MCP server, the change_title tool would
@@ -859,21 +902,93 @@ export async function runCodex(opts: {
     } as const;
     let first = true;
     let appendSystemPromptInjected = false;
+    let activeModelProvider: string | undefined;
 
     try {
         logger.debug('[codex]: client.connect begin');
         await client.connect();
         logger.debug('[codex]: client.connect done');
 
+        void (async () => {
+            const openRouterApiKey = process.env.OPENROUTER_API_KEY;
+            if (openRouterApiKey) {
+                const subscriptionCatalogClient = new CodexAppServerClient(undefined, 'openai');
+                const [codexResult, openRouterResult] = await Promise.allSettled([
+                    (async () => {
+                        await subscriptionCatalogClient.connect();
+                        try {
+                            return await subscriptionCatalogClient.listModels();
+                        } finally {
+                            await subscriptionCatalogClient.disconnect();
+                        }
+                    })(),
+                    listOpenRouterModels(openRouterApiKey),
+                ]);
+                const codexModels = codexResult.status === 'fulfilled' ? codexResult.value : [];
+                const openRouterModels = openRouterResult.status === 'fulfilled' ? openRouterResult.value : [];
+                if (codexResult.status === 'rejected') {
+                    logger.debug('[Codex] Failed to load Codex subscription model catalog:', codexResult.reason);
+                }
+                if (openRouterResult.status === 'rejected') {
+                    logger.debug('[Codex] Failed to load OpenRouter model catalog:', openRouterResult.reason);
+                }
+                return {
+                    models: [
+                        ...codexModels.map((model) => ({
+                            code: encodeCodexModelSelection('openai', model.model),
+                            value: `Codex subscription · ${model.displayName || model.model}`,
+                            description: model.model,
+                        })),
+                        ...openRouterModels.map((model) => ({
+                            ...model,
+                            code: encodeCodexModelSelection('openrouter', model.code),
+                            value: `OpenRouter · ${model.value}`,
+                        })),
+                    ],
+                    currentModelCode: undefined,
+                };
+            }
+
+            const models = await client.listModels();
+            return {
+                models: models.map((model) => ({
+                    code: model.model,
+                    value: model.displayName || model.model,
+                    description: model.model,
+                })),
+                currentModelCode: models.find((model) => model.isDefault)?.model,
+            };
+        })().then(({ models, currentModelCode }) => {
+            if (models.length === 0) {
+                return;
+            }
+
+            session.updateMetadata((currentMetadata) => ({
+                ...currentMetadata,
+                models,
+                currentModelCode,
+                modelCatalogVersion: 2,
+            }));
+        }).catch((error) => {
+            // Older Codex versions may not expose model/list, and provider
+            // catalogs may be temporarily unavailable. The app keeps its
+            // hardcoded fallback list in either case.
+            logger.debug('[Codex] Failed to load model catalog:', error);
+        });
+
         if (opts.resumeThreadId) {
-            await resumeExistingThread({
+            const selection = decodeCodexModelSelection(opts.model);
+            const resumedThread = await resumeExistingThread({
                 client,
                 session,
                 messageBuffer,
                 threadId: opts.resumeThreadId,
+                model: selection.model,
+                modelProvider: selection.modelProvider,
                 cwd: process.cwd(),
                 mcpServers,
             });
+            activeModelProvider = resumedThread.modelProvider;
             first = false;
             appendSystemPromptInjected = true;
         }
@@ -934,6 +1049,7 @@ export async function runCodex(opts: {
             if (isCodexClearText(message.message)) {
                 logger.debug('[Codex] Handling /clear command - resetting Codex thread state');
                 client.clearThreadState();
+                activeModelProvider = undefined;
                 currentTurnId = null;
                 codexStartedSubagents = new Set<string>();
                 codexActiveSubagents = new Set<string>();
@@ -977,21 +1093,58 @@ export async function runCodex(opts: {
                     sandboxManagedByHappy,
                 );
                 activeTurnPermissionMode = message.mode.permissionMode;
+                activeTurnMode = message.mode;
 
                 // Start thread on first turn (thread persists across mode changes)
+                const modelSelection = decodeCodexModelSelection(message.mode.model);
                 let activeThreadId = client.threadId;
                 if (!client.hasActiveThread() || !activeThreadId) {
                     const startedThread = await client.startThread({
-                        model: message.mode.model,
+                        model: modelSelection.model,
+                        modelProvider: modelSelection.modelProvider,
                         cwd: process.cwd(),
                         approvalPolicy: executionPolicy.approvalPolicy,
                         sandbox: executionPolicy.sandbox,
                         mcpServers,
                     });
                     activeThreadId = startedThread.threadId;
+                    activeModelProvider = startedThread.modelProvider;
                     session.updateMetadata((currentMetadata) => ({
                         ...currentMetadata,
                         codexThreadId: startedThread.threadId,
+                    }));
+                } else if (needsCodexProviderSwitch(activeModelProvider, modelSelection)) {
+                    // A thread's provider is immutable, and a native fork retains
+                    // provider-bound response/tool items that another provider cannot replay.
+                    const sourceThread = await client.readThread({
+                        threadId: activeThreadId,
+                        includeTurns: true,
+                    });
+                    const switchedThread = await client.startThread({
+                        model: modelSelection.model,
+                        modelProvider: modelSelection.modelProvider,
+                        cwd: process.cwd(),
+                        approvalPolicy: executionPolicy.approvalPolicy,
+                        sandbox: executionPolicy.sandbox,
+                        mcpServers,
+                    });
+                    if (switchedThread.modelProvider !== modelSelection.modelProvider) {
+                        throw new Error(
+                            `Codex did not switch to the requested ${modelSelection.modelProvider} provider.`,
+                        );
+                    }
+                    const historyItems = buildPortableCodexHistoryItems(sourceThread.thread);
+                    if (historyItems.length > 0) {
+                        await client.injectItems({
+                            threadId: switchedThread.threadId,
+                            items: historyItems,
+                        });
+                    }
+                    activeThreadId = switchedThread.threadId;
+                    activeModelProvider = switchedThread.modelProvider;
+                    session.updateMetadata((currentMetadata) => ({
+                        ...currentMetadata,
+                        codexThreadId: switchedThread.threadId,
                     }));
                 }
 
@@ -1028,7 +1181,7 @@ export async function runCodex(opts: {
                 });
 
                 const result = await client.sendTurnAndWait(turnPrompt, {
-                    model: message.mode.model,
+                    model: modelSelection.model,
                     approvalPolicy: executionPolicy.approvalPolicy,
                     sandbox: executionPolicy.sandbox,
                     effort: message.mode.effort,
@@ -1055,6 +1208,7 @@ export async function runCodex(opts: {
                 reasoningProcessor.abort();  // Use abort to properly finish any in-progress tool calls
                 diffProcessor.reset();
                 activeTurnPermissionMode = undefined;
+                activeTurnMode = null;
                 thinking = false;
                 session.keepAlive(thinking, 'remote');
                 emitReadyIfIdle({
@@ -1096,6 +1250,11 @@ export async function runCodex(opts: {
         // Stop Happy MCP server
         logger.debug('[codex]: happyServer.stop');
         happyServer.stop();
+        if (previousSessionWakeUrl === undefined) {
+            delete process.env.HAPPY_SESSION_WAKE_URL;
+        } else {
+            process.env.HAPPY_SESSION_WAKE_URL = previousSessionWakeUrl;
+        }
 
         // Clean up ink UI
         if (process.stdin.isTTY) {

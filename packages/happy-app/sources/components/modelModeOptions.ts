@@ -46,6 +46,17 @@ export function mapMetadataOptions(options?: MetadataOption[] | null): ModeOptio
     }));
 }
 
+export function filterModeOptions<T extends ModeOption>(options: T[], query: string): T[] {
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) {
+        return options;
+    }
+
+    return options.filter((option) => (
+        `${option.key}\n${option.name}\n${option.description ?? ''}`.toLowerCase().includes(normalizedQuery)
+    ));
+}
+
 export function getClaudePermissionModes(translate: Translate): PermissionMode[] {
     return [
         { key: 'default', name: translate('agentInput.permissionMode.default'), description: null },

@@ -59,6 +59,7 @@ function createMcpServer(handler: (title: string) => Promise<{ success: boolean;
 
 export async function startHappyServer(client: ApiSessionClient) {
     logger.debug(`[happyMCP] server:start sessionId=${client.sessionId}`);
+    const wakePath = `/wake/${randomUUID()}`;
 
     const handler = async (title: string) => {
         logger.debug('[happyMCP] Changing title to:', title);
@@ -75,6 +76,37 @@ export async function startHappyServer(client: ApiSessionClient) {
     };
 
     const server = createServer(async (req, res) => {
+        if (req.method === 'POST' && req.url === wakePath) {
+            try {
+                const chunks: Buffer[] = [];
+                let size = 0;
+                for await (const chunk of req) {
+                    const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                    size += data.length;
+                    if (size > 64 * 1024) {
+                        res.writeHead(413).end();
+                        return;
+                    }
+                    chunks.push(data);
+                }
+
+                const parsed = z.object({
+                    text: z.string().trim().min(1).max(8_000),
+                }).safeParse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+                if (!parsed.success) {
+                    res.writeHead(400).end();
+                    return;
+                }
+
+                client.injectLocalUserMessage(parsed.data.text);
+                res.writeHead(202).end();
+            } catch (error) {
+                logger.debug('[happyMCP] Invalid wake request', error);
+                res.writeHead(400).end();
+            }
+            return;
+        }
+
         const mcp = createMcpServer(handler);
         try {
             const transport = new StreamableHTTPServerTransport({
@@ -106,6 +138,7 @@ export async function startHappyServer(client: ApiSessionClient) {
 
     return {
         url: baseUrl.toString(),
+        wakeUrl: new URL(wakePath, baseUrl).toString(),
         toolNames: ['change_title'],
         stop: () => {
             logger.debug(`[happyMCP] server:stop sessionId=${client.sessionId}`);
