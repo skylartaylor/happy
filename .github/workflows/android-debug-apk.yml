@@ -66,6 +66,9 @@ jobs:
       - name: Generate Android project
         run: pnpm --filter happy-app exec expo prebuild --platform android --no-install
 
+      - name: Verify preview OTA updates are disabled
+        run: grep -Fq 'expo.modules.updates.ENABLED" android:value="false"' packages/happy-app/android/app/src/main/AndroidManifest.xml
+
       - name: Build arm64 standalone APK
         working-directory: packages/happy-app/android
         run: |
