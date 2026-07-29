@@ -87,14 +87,16 @@ export default {
                     ? { NSAllowsLocalNetworking: true }
                     : { NSAllowsLocalNetworking: true, NSAllowsArbitraryLoads: true }
             },
-            associatedDomains: variant === 'production' ? ["applinks:app.happy.engineering"] : []
+            ...(variant === 'production'
+                ? { associatedDomains: ["applinks:app.happy.engineering"] }
+                : {})
         },
         android: {
-            versionCode: variant === 'preview' ? 2 : undefined,
+            versionCode: variant === 'preview' ? 3 : undefined,
             adaptiveIcon: {
                 foregroundImage: "./sources/assets/images/icon-adaptive.png",
                 monochromeImage: "./sources/assets/images/icon-monochrome.png",
-                backgroundColor: "#18171C"
+                backgroundColor: "#000000"
             },
             permissions: [
                 "android.permission.RECORD_AUDIO",
@@ -192,7 +194,7 @@ export default {
                     ios: {
                         backgroundColor: "#F2F2F7",
                         dark: {
-                            backgroundColor: "#1C1C1E",
+                            backgroundColor: "#000000",
                         }
                     },
                     android: {
@@ -200,7 +202,7 @@ export default {
                         backgroundColor: "#F5F5F5",
                         dark: {
                             image: "./sources/assets/images/splash-android-dark.png",
-                            backgroundColor: "#1e1e1e",
+                            backgroundColor: "#000000",
                         }
                     }
                 }

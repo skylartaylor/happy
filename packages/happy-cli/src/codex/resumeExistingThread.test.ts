@@ -53,6 +53,40 @@ describe('resumeExistingThread', () => {
         });
     });
 
+    it('keeps provider selection while suppressing side-chat announcements', async () => {
+        const client = {
+            resumeThread: vi.fn().mockResolvedValue({
+                threadId: 'thread-openrouter',
+                model: 'openai/gpt-5.4',
+                modelProvider: 'openrouter',
+            }),
+        };
+        const session = {
+            updateMetadata: vi.fn(),
+            sendSessionEvent: vi.fn(),
+        };
+        const messageBuffer = {
+            addMessage: vi.fn(),
+        };
+
+        await expect(resumeExistingThread({
+            client,
+            session,
+            messageBuffer,
+            threadId: 'thread-openrouter',
+            model: 'openai/gpt-5.4',
+            modelProvider: 'openrouter',
+            cwd: '/tmp/project',
+            mcpServers: {},
+            announce: false,
+        })).resolves.toMatchObject({ modelProvider: 'openrouter' });
+        expect(client.resumeThread).toHaveBeenCalledWith(expect.objectContaining({
+            model: 'openai/gpt-5.4',
+            modelProvider: 'openrouter',
+        }));
+        expect(session.sendSessionEvent).not.toHaveBeenCalled();
+    });
+
     it('wraps backend resume errors with the thread ID', async () => {
         const client = {
             resumeThread: vi.fn().mockRejectedValue(new Error('thread not found')),
