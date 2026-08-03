@@ -403,7 +403,7 @@ describe('CodexAppServerClient sandbox integration', () => {
             sandbox: 'read-only',
         });
 
-        const pendingTurn = client.sendTurnAndWait('hang forever', { turnTimeoutMs: 5000 });
+        const pendingTurn = client.sendTurnAndWait('hang forever');
         await waitFor(() => firstProcessRequests.some((msg) => msg.method === 'turn/start'));
 
         const abortResult = await client.abortTurnWithFallback({
@@ -439,6 +439,75 @@ describe('CodexAppServerClient sandbox integration', () => {
         await expect(client.sendTurnAndWait('follow up after reconnect')).resolves.toEqual({ aborted: false });
 
         await client.disconnect();
+    });
+
+    it('keeps long-running turns active until Codex reports completion', async () => {
+        const nativeSetTimeout = globalThis.setTimeout;
+        const timeoutSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation((
+            (handler: (...args: any[]) => void, delay?: number, ...args: any[]) => nativeSetTimeout(
+                handler,
+                delay === 10 * 60 * 1000 ? 1 : delay,
+                ...args,
+            )
+        ) as typeof setTimeout);
+        const proc = createMockProcess({
+            onRequest: (msg, stdout) => {
+                if (msg.method === 'thread/start' && msg.id != null) {
+                    nativeSetTimeout(() => {
+                        pushJsonLine(stdout, {
+                            id: msg.id,
+                            result: {
+                                thread: { id: 'thread-long-running', path: '/tmp/thread-long-running' },
+                                model: 'gpt-test',
+                                modelProvider: 'openai',
+                                cwd: '/tmp/project',
+                                approvalPolicy: 'on-request',
+                                sandbox: { type: 'readOnly' },
+                                reasoningEffort: null,
+                            },
+                        });
+                    }, 0);
+                }
+
+                if (msg.method === 'turn/start' && msg.id != null) {
+                    nativeSetTimeout(() => {
+                        pushJsonLine(stdout, { id: msg.id, result: { turn: { id: 'turn-long-running' } } });
+                        pushJsonLine(stdout, {
+                            method: 'codex/event',
+                            params: { msg: { type: 'task_started', turn_id: 'turn-long-running' } },
+                        });
+                    }, 0);
+                    nativeSetTimeout(() => {
+                        pushJsonLine(stdout, {
+                            method: 'codex/event',
+                            params: { msg: { type: 'task_complete', turn_id: 'turn-long-running' } },
+                        });
+                    }, 25);
+                }
+            },
+        });
+        mockSpawn.mockImplementationOnce(() => proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+
+        try {
+            await client.connect();
+            await client.startThread({
+                model: 'gpt-test',
+                cwd: '/tmp/project',
+                approvalPolicy: 'on-request',
+                sandbox: 'read-only',
+            });
+
+            await expect(client.sendTurnAndWait('work for more than ten minutes')).resolves.toEqual({
+                aborted: false,
+            });
+            expect(timeoutSpy.mock.calls.some(([, delay]) => delay === 10 * 60 * 1000)).toBe(false);
+        } finally {
+            timeoutSpy.mockRestore();
+            await client.disconnect();
+        }
     });
 
     it('steers new user input into the active turn', async () => {
@@ -505,7 +574,7 @@ describe('CodexAppServerClient sandbox integration', () => {
         });
 
         await expect(client.steerTurn('too early')).resolves.toBe(false);
-        const pendingTurn = client.sendTurnAndWait('watch the PR', { turnTimeoutMs: 5000 });
+        const pendingTurn = client.sendTurnAndWait('watch the PR');
         await waitFor(() => client.turnId === 'turn-steer');
 
         await expect(client.steerTurn('stop watching and fix steering', {
@@ -606,7 +675,7 @@ describe('CodexAppServerClient sandbox integration', () => {
             sandbox: 'read-only',
         });
 
-        const pendingTurn = client.sendTurnAndWait('hang on interrupt', { turnTimeoutMs: 5000 });
+        const pendingTurn = client.sendTurnAndWait('hang on interrupt');
         await waitFor(() => firstProcessRequests.some((msg) => msg.method === 'turn/start'));
         await waitFor(() => client.turnId === 'turn-stuck-interrupt');
 
