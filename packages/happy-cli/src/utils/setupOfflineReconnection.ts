@@ -11,6 +11,9 @@ import type { ApiClient } from '@/api/api';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState, Metadata, Session } from '@/api/types';
 import { configuration } from '@/configuration';
+import { encodeBase64 } from '@/api/encryption';
+import { notifyDaemonSessionStarted } from '@/daemon/controlClient';
+import { logger } from '@/ui/logger';
 import { createOfflineSessionStub } from '@/utils/offlineSessionStub';
 import { startOfflineReconnection } from '@/utils/serverConnectionErrors';
 
@@ -94,6 +97,16 @@ export function setupOfflineReconnection(opts: SetupOfflineReconnectionOptions):
                 const realSession = api.sessionSyncClient(resp);
                 // Notify caller to swap the session reference
                 onSessionSwap(realSession);
+                const daemonResult = await notifyDaemonSessionStarted(resp.id, metadata, {
+                    encryptionKey: encodeBase64(resp.encryptionKey),
+                    encryptionVariant: resp.encryptionVariant,
+                    seq: resp.seq,
+                    metadataVersion: resp.metadataVersion,
+                    agentStateVersion: resp.agentStateVersion,
+                });
+                if (daemonResult?.error) {
+                    logger.debug('[OfflineReconnection] Failed to report recovered session to daemon:', daemonResult.error);
+                }
                 return realSession;
             },
             onNotify: (msg) => {

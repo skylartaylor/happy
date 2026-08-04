@@ -33,6 +33,7 @@ import {
   sanitizeSessionEnvironment,
   wrapTmuxCommandWithSessionEnvironmentSanitizer,
 } from './sessionEnvironment';
+import { createSessionSpawnWaiter, type SessionSpawnWaiter } from './sessionSpawnWaiter';
 
 /** Shell-escape a string for safe interpolation into tmux commands. */
 function shellescape(s: string): string {
@@ -212,7 +213,22 @@ export async function startDaemon(): Promise<void> {
     }
 
     // Session spawning awaiter system
-    const pidToAwaiter = new Map<number, (session: TrackedSession) => void>();
+    const pidToAwaiter = new Map<number, SessionSpawnWaiter>();
+
+    const waitForSessionStart = (pid: number, tmux = false): Promise<SpawnSessionResult> => {
+      const suffix = tmux ? ' (tmux)' : '';
+      const waiter = createSessionSpawnWaiter({
+        timeoutErrorMessage: `Session webhook timeout for PID ${pid}${suffix}`,
+        onTimeout: () => {
+          logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${pid}${suffix}`);
+        },
+        onSettled: () => {
+          pidToAwaiter.delete(pid);
+        },
+      });
+      pidToAwaiter.set(pid, waiter);
+      return waiter.promise;
+    };
 
     // Helper functions
     const getCurrentChildren = () => Array.from(pidToTrackedSession.values());
@@ -256,9 +272,10 @@ export async function startDaemon(): Promise<void> {
         // Resolve any awaiter for this PID
         const awaiter = pidToAwaiter.get(pid);
         if (awaiter) {
-          pidToAwaiter.delete(pid);
-          awaiter(existingSession);
-          logger.debug(`[DAEMON RUN] Resolved session awaiter for PID ${pid}`);
+          if (awaiter.started(sessionId)) {
+            logger.debug(`[DAEMON RUN] Session ${sessionId} fully spawned with webhook`);
+            logger.debug(`[DAEMON RUN] Resolved session awaiter for PID ${pid}`);
+          }
         }
       } else if (!existingSession) {
         // New session started externally
@@ -500,27 +517,7 @@ export async function startDaemon(): Promise<void> {
             // Wait for webhook to populate session with happySessionId (exact same as regular flow)
             logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${tmuxResult.pid} (tmux)`);
 
-            return new Promise((resolve) => {
-              // Set timeout for webhook (same as regular flow)
-              const timeout = setTimeout(() => {
-                pidToAwaiter.delete(tmuxResult.pid!);
-                logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${tmuxResult.pid} (tmux)`);
-                resolve({
-                  type: 'error',
-                  errorMessage: `Session webhook timeout for PID ${tmuxResult.pid} (tmux)`
-                });
-              }, 15_000); // Same timeout as regular sessions
-
-              // Register awaiter for tmux session (exact same as regular flow)
-              pidToAwaiter.set(tmuxResult.pid!, (completedSession) => {
-                clearTimeout(timeout);
-                logger.debug(`[DAEMON RUN] Session ${completedSession.happySessionId} fully spawned with webhook (tmux)`);
-                resolve({
-                  type: 'success',
-                  sessionId: completedSession.happySessionId!
-                });
-              });
-            });
+            return waitForSessionStart(tmuxResult.pid, true);
           } else {
             logger.debug(`[DAEMON RUN] Failed to spawn in tmux: ${tmuxResult.error}, falling back to regular spawning`);
             useTmux = false;
@@ -626,53 +623,40 @@ export async function startDaemon(): Promise<void> {
         });
       }
 
-      logger.debug(`[DAEMON RUN] Spawned process with PID ${happyProcess.pid}`);
+      const childPid = happyProcess.pid;
+      logger.debug(`[DAEMON RUN] Spawned process with PID ${childPid}`);
 
       const trackedSession: TrackedSession = {
         startedBy: 'daemon',
-        pid: happyProcess.pid,
+        pid: childPid,
         childProcess: happyProcess,
         directoryCreated,
         message,
       };
 
-      pidToTrackedSession.set(happyProcess.pid, trackedSession);
+      pidToTrackedSession.set(childPid, trackedSession);
+      const startResult = waitForSessionStart(childPid);
 
       happyProcess.on('exit', (code, signal) => {
-        logger.debug(`[DAEMON RUN] Child PID ${happyProcess.pid} exited with code ${code}, signal ${signal}`);
-        if (happyProcess.pid) {
-          onChildExited(happyProcess.pid);
+        logger.debug(`[DAEMON RUN] Child PID ${childPid} exited with code ${code}, signal ${signal}`);
+        const awaiter = pidToAwaiter.get(childPid);
+        if (awaiter) {
+          awaiter.failed(`Happy process ${childPid} exited before reporting a session (code ${code}, signal ${signal})`);
         }
+        onChildExited(childPid);
       });
 
       happyProcess.on('error', (error) => {
         logger.debug(`[DAEMON RUN] Child process error:`, error);
-        if (happyProcess.pid) {
-          onChildExited(happyProcess.pid);
+        const awaiter = pidToAwaiter.get(childPid);
+        if (awaiter) {
+          awaiter.failed(`Happy process ${childPid} failed before reporting a session: ${error.message}`);
         }
+        onChildExited(childPid);
       });
 
-      logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${happyProcess.pid}`);
-
-      return new Promise((resolve) => {
-        const timeout = setTimeout(() => {
-          pidToAwaiter.delete(happyProcess.pid!);
-          logger.debug(`[DAEMON RUN] Session webhook timeout for PID ${happyProcess.pid}`);
-          resolve({
-            type: 'error',
-            errorMessage: `Session webhook timeout for PID ${happyProcess.pid}`
-          });
-        }, 15_000);
-
-        pidToAwaiter.set(happyProcess.pid!, (completedSession) => {
-          clearTimeout(timeout);
-          logger.debug(`[DAEMON RUN] Session ${completedSession.happySessionId} fully spawned with webhook`);
-          resolve({
-            type: 'success',
-            sessionId: completedSession.happySessionId!
-          });
-        });
-      });
+      logger.debug(`[DAEMON RUN] Waiting for session webhook for PID ${childPid}`);
+      return startResult;
     };
 
     const findTrackedSessionById = (happySessionId: string): TrackedSession | undefined => {
