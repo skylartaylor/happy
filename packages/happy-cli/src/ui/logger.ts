@@ -11,6 +11,7 @@ import { inspect } from 'node:util'
 import { configuration } from '@/configuration'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
+import { redactSensitiveLogData } from './redactSensitiveLogData'
 // Note: readDaemonState is imported lazily inside listDaemonLogFiles() to avoid
 // circular dependency: logger.ts ↔ persistence.ts
 
@@ -150,30 +151,32 @@ class Logger {
   }
   
   private logToConsole(level: 'debug' | 'error' | 'info' | 'warn', prefix: string, message: string, ...args: unknown[]): void {
+    const safeMessage = redactSensitiveLogData(message) as string
+    const safeArgs = args.map(arg => redactSensitiveLogData(arg))
     switch (level) {
       case 'debug': {
-        console.log(chalk.gray(prefix), message, ...args)
+        console.log(chalk.gray(prefix), safeMessage, ...safeArgs)
         break
       }
 
       case 'error': {
-        console.error(chalk.red(prefix), message, ...args)
+        console.error(chalk.red(prefix), safeMessage, ...safeArgs)
         break
       }
 
       case 'info': {
-        console.log(chalk.blue(prefix), message, ...args)
+        console.log(chalk.blue(prefix), safeMessage, ...safeArgs)
         break
       }
 
       case 'warn': {
-        console.log(chalk.yellow(prefix), message, ...args)
+        console.log(chalk.yellow(prefix), safeMessage, ...safeArgs)
         break
       }
 
       default: {
         this.debug('Unknown log level:', level)
-        console.log(chalk.blue(prefix), message, ...args)
+        console.log(chalk.blue(prefix), safeMessage, ...safeArgs)
         break
       }
     }
@@ -202,7 +205,9 @@ class Logger {
   }
 
   private logToFile(prefix: string, message: string, ...args: unknown[]): void {
-    const logLine = `${prefix} ${message} ${args.map(arg =>
+    const safeMessage = redactSensitiveLogData(message) as string
+    const safeArgs = args.map(arg => redactSensitiveLogData(arg))
+    const logLine = `${prefix} ${safeMessage} ${safeArgs.map(arg =>
       typeof arg === 'string' ? arg : inspect(arg, { depth: 5, breakLength: 120 })
     ).join(' ')}\n`
     
@@ -214,7 +219,7 @@ class Logger {
         level = 'debug'
       }
       // Fire and forget, with explicit .catch to prevent unhandled rejection
-      this.sendToRemoteServer(level, message, ...args).catch(() => {
+      this.sendToRemoteServer(level, safeMessage, ...safeArgs).catch(() => {
         // Silently ignore remote logging errors to prevent loops
       })
     }
