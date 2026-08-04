@@ -67,6 +67,11 @@ import { readFileBytes } from '@/utils/readFileBytes';
 import { Modal } from '@/modal';
 import { t } from '@/text';
 import { isRigMetadataV1, rigCanUseAttachments, usesControlledSessionUi } from './rig';
+import {
+    loadPendingMessageOutbox,
+    savePendingMessageOutbox,
+    type PersistedOutboxMessage,
+} from './messageOutboxPersistence';
 
 type V3GetSessionMessagesResponse = {
     messages: ApiMessage[];
@@ -90,10 +95,7 @@ type V3PostSessionMessagesResponse = {
     }>;
 };
 
-type OutboxMessage = {
-    localId: string;
-    content: string;
-};
+type OutboxMessage = PersistedOutboxMessage;
 
 type SendMessageOptions = {
     displayText?: string;
@@ -120,6 +122,7 @@ class Sync {
     // advanced downward by loadOlderMessages.
     private sessionOldestSeq = new Map<string, number>();
     private pendingOutbox = new Map<string, OutboxMessage[]>();
+    private pendingOutboxOwner: string | null = null;
     private sessionMessageQueue = new Map<string, NormalizedMessage[]>();
     private sessionQueueProcessing = new Set<string>();
     private sessionMessageLocks = new Map<string, AsyncLock>();
@@ -178,15 +181,9 @@ class Sync {
             apiSocket.sendAppState(getCurrentAppState());
 
             if (nextAppState === 'active') {
-                const shouldFailAfterResume = this.backgroundSendStartedAt !== null
-                    && this.hasPendingOutboxMessages()
-                    && (Date.now() - this.backgroundSendStartedAt) >= Sync.BACKGROUND_SEND_TIMEOUT_MS;
                 void this.cancelBackgroundSendTimeoutNotification();
                 this.clearBackgroundSendWatchdog();
-                if (shouldFailAfterResume) {
-                    void this.notifyMessageSendFailed();
-                    this.failPendingOutboxMessages('Message failed to send in background after 30s. Please retry.');
-                }
+                this.retryPendingOutboxMessages();
                 log.log('📱 App became active');
                 this.purchasesSync.invalidate();
                 this.profileSync.invalidate();
@@ -248,6 +245,9 @@ class Sync {
 
     async #init() {
 
+        this.pendingOutboxOwner = `${getServerUrl()}\n${this.serverID}`;
+        this.pendingOutbox = loadPendingMessageOutbox(this.pendingOutboxOwner);
+
         // Subscribe to updates
         this.subscribeToUpdates();
 
@@ -280,6 +280,7 @@ class Sync {
         // when encryption keys are unavailable (e.g. V1 auth fallback) —
         // let it resolve in the background instead of blocking the UI.
         this.sessionsSync.awaitQueue().then(() => {
+            this.pruneAndRetryPendingOutbox();
             storage.getState().applyReady();
         }).catch((error) => {
             console.error('Failed to load sessions:', error);
@@ -318,6 +319,45 @@ class Sync {
             this.sendSync.set(sessionId, sync);
         }
         return sync;
+    }
+
+    private persistPendingOutbox() {
+        if (this.pendingOutboxOwner) {
+            savePendingMessageOutbox(this.pendingOutboxOwner, this.pendingOutbox);
+        }
+    }
+
+    private enqueueOutboxMessage(sessionId: string, message: OutboxMessage) {
+        let pending = this.pendingOutbox.get(sessionId);
+        if (!pending) {
+            pending = [];
+            this.pendingOutbox.set(sessionId, pending);
+        }
+        pending.push(message);
+        this.persistPendingOutbox();
+    }
+
+    private retryPendingOutboxMessages() {
+        for (const [sessionId, messages] of this.pendingOutbox) {
+            if (messages.length > 0) {
+                this.getSendSync(sessionId).invalidate();
+            }
+        }
+    }
+
+    private pruneAndRetryPendingOutbox() {
+        const sessions = storage.getState().sessions;
+        let changed = false;
+        for (const sessionId of this.pendingOutbox.keys()) {
+            if (!sessions[sessionId]) {
+                this.pendingOutbox.delete(sessionId);
+                changed = true;
+            }
+        }
+        if (changed) {
+            this.persistPendingOutbox();
+        }
+        this.retryPendingOutboxMessages();
     }
 
     private enqueueMessages(sessionId: string, messages: NormalizedMessage[]) {
@@ -385,7 +425,7 @@ class Sync {
         if (Platform.OS === 'web' || this.appState === 'active') {
             return;
         }
-        if (!this.hasPendingOutboxMessages() || this.backgroundSendTimeout) {
+        if (!this.hasPendingOutboxMessages() || this.backgroundSendTimeout || this.backgroundSendStartedAt !== null) {
             return;
         }
 
@@ -413,8 +453,8 @@ class Sync {
         try {
             this.backgroundSendNotificationId = await Notifications.scheduleNotificationAsync({
                 content: {
-                    title: 'Message not sent',
-                    body: 'A message is still sending in the background. It will fail in 30 seconds if not delivered.',
+                    title: 'Message still sending',
+                    body: 'Happy will keep retrying. Open the app to reconnect now.',
                     sound: true
                 },
                 trigger: {
@@ -440,56 +480,6 @@ class Sync {
         }
     }
 
-    private async notifyMessageSendFailed() {
-        if (Platform.OS === 'web') {
-            return;
-        }
-        try {
-            await Notifications.scheduleNotificationAsync({
-                content: {
-                    title: 'Message failed',
-                    body: 'A message failed to send while the app was in background. Open Happy and retry.',
-                    sound: true
-                },
-                trigger: null
-            });
-        } catch (error) {
-            log.log(`Failed to schedule message failure notification: ${error}`);
-        }
-    }
-
-    private failPendingOutboxMessages(reasonText: string) {
-        for (const controller of this.sendAbortControllers.values()) {
-            controller.abort();
-        }
-        this.sendAbortControllers.clear();
-
-        const now = Date.now();
-        const sessionIds: string[] = [];
-        for (const [sessionId, pending] of this.pendingOutbox) {
-            if (pending.length === 0) {
-                continue;
-            }
-            pending.length = 0;
-            this.pendingOutbox.delete(sessionId);
-            sessionIds.push(sessionId);
-        }
-
-        for (const sessionId of sessionIds) {
-            this.enqueueMessages(sessionId, [{
-                id: randomUUID(),
-                localId: null,
-                createdAt: now,
-                role: 'event',
-                isSidechain: false,
-                content: {
-                    type: 'message',
-                    message: reasonText
-                }
-            }]);
-        }
-    }
-
     private async handleBackgroundSendTimeout() {
         if (!this.hasPendingOutboxMessages()) {
             await this.cancelBackgroundSendTimeoutNotification();
@@ -497,10 +487,7 @@ class Sync {
             return;
         }
 
-        await this.cancelBackgroundSendTimeoutNotification();
-        await this.notifyMessageSendFailed();
-        this.failPendingOutboxMessages('Message failed to send in background after 30s. Please retry.');
-        this.backgroundSendStartedAt = null;
+        log.log('📨 Messages are still pending in the background. Keeping them queued for retry.');
     }
 
     /**
@@ -642,12 +629,6 @@ class Sync {
             }
 
             if (uploaded.length > 0) {
-                let pending = this.pendingOutbox.get(sessionId);
-                if (!pending) {
-                    pending = [];
-                    this.pendingOutbox.set(sessionId, pending);
-                }
-
                 for (const att of uploaded) {
                     const fileRecord: RawRecord = {
                         role: 'session',
@@ -687,7 +668,7 @@ class Sync {
                     if (fileNormalized) {
                         this.enqueueMessages(sessionId, [fileNormalized]);
                     }
-                    pending.push({ localId: fileLocalId, content: encryptedFileRecord });
+                    this.enqueueOutboxMessage(sessionId, { localId: fileLocalId, content: encryptedFileRecord });
                 }
             }
         }
@@ -738,12 +719,7 @@ class Sync {
             this.enqueueMessages(sessionId, [normalizedMessage]);
         }
 
-        let pending = this.pendingOutbox.get(sessionId);
-        if (!pending) {
-            pending = [];
-            this.pendingOutbox.set(sessionId, pending);
-        }
-        pending.push({
+        this.enqueueOutboxMessage(sessionId, {
             localId,
             content: encryptedRawRecord
         });
@@ -1889,6 +1865,7 @@ class Sync {
         if (pending.length === 0) {
             this.pendingOutbox.delete(sessionId);
         }
+        this.persistPendingOutbox();
         if (!this.hasPendingOutboxMessages()) {
             this.clearBackgroundSendWatchdog();
             await this.cancelBackgroundSendTimeoutNotification();
@@ -2290,6 +2267,7 @@ class Sync {
             this.messagesSync.delete(sessionId);
             this.sendSync.delete(sessionId);
             this.pendingOutbox.delete(sessionId);
+            this.persistPendingOutbox();
             this.sessionLastSeq.delete(sessionId);
             this.sessionOldestSeq.delete(sessionId);
             this.sessionMessageLocks.delete(sessionId);
