@@ -36,7 +36,11 @@ import { connectionState } from '@/utils/serverConnectionErrors';
 import { setupOfflineReconnection } from '@/utils/setupOfflineReconnection';
 import type { PermissionMode } from '@/api/types';
 import type { ApiSessionClient } from '@/api/apiSession';
-import { resolveCodexExecutionPolicy, shouldAutoApproveCodexApproval } from './executionPolicy';
+import {
+    resolveCodexApprovalDecision,
+    resolveCodexExecutionPolicy,
+    resolveCodexPermissionModeAfterAbort,
+} from './executionPolicy';
 import {
     mapCodexMcpMessageToSessionEnvelopes,
     mapCodexProcessorMessageToSessionEnvelopes,
@@ -285,15 +289,19 @@ export async function runCodex(opts: {
     let thinking = false;
 
     const resetCurrentModeDefaults = () => {
-        // Reset permission mode and prompts to what the session was launched
-        // with. Note this is NOT
-        // a safety guarantee by itself — for plain `happy codex` the launch
-        // mode IS yolo; the post-abort grace window is protected by the
-        // approval handler only trusting explicitly-picked modes.
+        // Preserve the latest permission-mode selection across aborts and
+        // automatic continuations. Resetting to the launch mode made a session
+        // launched read-only silently revert after the user selected yolo.
+        // The explicit marker is still cleared, so a straggler approval from
+        // the aborted turn cannot use the preserved mode during the abort
+        // grace window.
         // Model and effort are deliberately NOT reset here. The app sends them
         // only when the user changes the picker, so resetting them on abort
         // silently desyncs the picker from what the next turn actually runs.
-        currentPermissionMode = initialPermissionMode;
+        currentPermissionMode = resolveCodexPermissionModeAfterAbort(
+            currentPermissionMode,
+            initialPermissionMode,
+        );
         currentPermissionModeExplicitlySet = false;
         currentAppendSystemPrompt = undefined;
         logger.debug('[Codex] Reset current mode defaults after abort');
@@ -739,16 +747,24 @@ export async function runCodex(opts: {
         // Check the latest session mode too: a turn pinned under an untrusted
         // policy keeps prompting after the user flips to yolo mid-turn
         // otherwise. Only when the mode was EXPLICITLY picked by the user —
-        // the abort-reset restores the launch default (yolo for plain codex),
-        // and a straggler approval from the dying turn (the ~3s abort grace
-        // window, when the pinned turn mode is still set) must not be waved
-        // through by that reset value.
+        // abort cleanup clears this marker while retaining the selected mode,
+        // and the abort-in-progress guard below rejects straggler approvals
+        // throughout the backend interruption grace window.
         const latestPermissionMode = currentPermissionModeExplicitlySet
             ? currentPermissionMode ?? DEFAULT_CODEX_PERMISSION_MODE
             : undefined;
 
-        if (shouldAutoApproveCodexApproval(activePermissionMode, client.sandboxEnabled)
-            || (latestPermissionMode !== undefined && shouldAutoApproveCodexApproval(latestPermissionMode, client.sandboxEnabled))) {
+        const immediateDecision = resolveCodexApprovalDecision(
+            abortInProgress !== null,
+            activePermissionMode,
+            latestPermissionMode,
+            client.sandboxEnabled,
+        );
+        if (immediateDecision !== null) {
+            if (immediateDecision === 'abort') {
+                logger.debug(`[Codex] Aborting late ${params.type} approval while turn interruption is in progress`);
+                return 'abort';
+            }
             logger.debug(`[Codex] Auto-approving ${params.type} approval in ${activePermissionMode} mode (latest: ${latestPermissionMode ?? 'n/a'})`);
             return 'approved';
         }

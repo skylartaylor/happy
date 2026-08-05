@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { resolveCodexExecutionPolicy, shouldAutoApproveCodexApproval } from '../executionPolicy';
+import {
+    resolveCodexApprovalDecision,
+    resolveCodexExecutionPolicy,
+    resolveCodexPermissionModeAfterAbort,
+    shouldAutoApproveCodexApproval,
+} from '../executionPolicy';
 
 describe('resolveCodexExecutionPolicy', () => {
     it('forces never + danger-full-access when sandbox is managed by Happy', () => {
@@ -72,5 +77,34 @@ describe('resolveCodexExecutionPolicy', () => {
         expect(shouldAutoApproveCodexApproval('default', true)).toBe(true);
         expect(shouldAutoApproveCodexApproval('read-only', true)).toBe(true);
         expect(shouldAutoApproveCodexApproval('safe-yolo', true)).toBe(true);
+    });
+});
+
+describe('resolveCodexPermissionModeAfterAbort', () => {
+    it('preserves a mode selected after a read-only launch', () => {
+        expect(resolveCodexPermissionModeAfterAbort('yolo', 'read-only')).toBe('yolo');
+        expect(resolveCodexPermissionModeAfterAbort('safe-yolo', 'read-only')).toBe('safe-yolo');
+    });
+
+    it('falls back to the launch mode before any mode has been selected', () => {
+        expect(resolveCodexPermissionModeAfterAbort(undefined, 'read-only')).toBe('read-only');
+    });
+});
+
+describe('resolveCodexApprovalDecision', () => {
+    it('aborts a late approval after switching a read-only turn to yolo', () => {
+        expect(resolveCodexApprovalDecision(true, 'read-only', 'yolo', false)).toBe('abort');
+    });
+
+    it('aborts a late approval from an active yolo turn', () => {
+        expect(resolveCodexApprovalDecision(true, 'yolo', undefined, false)).toBe('abort');
+    });
+
+    it('uses the latest explicit yolo mode outside abort cleanup', () => {
+        expect(resolveCodexApprovalDecision(false, 'read-only', 'yolo', false)).toBe('approved');
+    });
+
+    it('returns no immediate decision for an ordinary untrusted approval', () => {
+        expect(resolveCodexApprovalDecision(false, 'default', undefined, false)).toBeNull();
     });
 });
