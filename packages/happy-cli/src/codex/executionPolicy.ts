@@ -1,6 +1,35 @@
 import type { ApprovalPolicy, SandboxMode } from './codexAppServerTypes';
 import type { PermissionMode } from '@/api/types';
 
+export function resolveCodexPermissionModeAfterAbort(
+    currentPermissionMode: PermissionMode | undefined,
+    initialPermissionMode: PermissionMode,
+): PermissionMode {
+    // Abort cleanup must not discard a mode explicitly selected after launch.
+    // The caller separately marks the mode as non-explicit so stale approvals
+    // from the aborted turn cannot use it for auto-approval.
+    return currentPermissionMode ?? initialPermissionMode;
+}
+
+export function resolveCodexApprovalDecision(
+    abortInProgress: boolean,
+    activePermissionMode: PermissionMode,
+    latestPermissionMode: PermissionMode | undefined,
+    sandboxManagedByHappy: boolean,
+): 'abort' | 'approved' | null {
+    if (abortInProgress) {
+        return 'abort';
+    }
+
+    if (shouldAutoApproveCodexApproval(activePermissionMode, sandboxManagedByHappy)
+        || (latestPermissionMode !== undefined
+            && shouldAutoApproveCodexApproval(latestPermissionMode, sandboxManagedByHappy))) {
+        return 'approved';
+    }
+
+    return null;
+}
+
 export function resolveCodexExecutionPolicy(
     permissionMode: PermissionMode,
     sandboxManagedByHappy: boolean,
