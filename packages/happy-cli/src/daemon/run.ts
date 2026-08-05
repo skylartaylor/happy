@@ -34,6 +34,7 @@ import {
   wrapTmuxCommandWithSessionEnvironmentSanitizer,
 } from './sessionEnvironment';
 import { createSessionSpawnWaiter, type SessionSpawnWaiter } from './sessionSpawnWaiter';
+import { findActiveTrackedSession, runGuardedSessionResume } from './sessionResumeGuard';
 
 /** Shell-escape a string for safe interpolation into tmux commands. */
 function shellescape(s: string): string {
@@ -601,12 +602,14 @@ export async function startDaemon(): Promise<void> {
       env,
       directoryCreated = false,
       message,
+      happySessionId,
     }: {
       args: string[];
       cwd: string;
       env: NodeJS.ProcessEnv;
       directoryCreated?: boolean;
       message?: string;
+      happySessionId?: string;
     }): Promise<SpawnSessionResult> => {
       const happyProcess = spawnHappyCLI(args, {
         cwd,
@@ -629,6 +632,7 @@ export async function startDaemon(): Promise<void> {
       const trackedSession: TrackedSession = {
         startedBy: 'daemon',
         pid: childPid,
+        happySessionId,
         childProcess: happyProcess,
         directoryCreated,
         message,
@@ -659,12 +663,7 @@ export async function startDaemon(): Promise<void> {
       return startResult;
     };
 
-    const findTrackedSessionById = (happySessionId: string): TrackedSession | undefined => {
-      for (const session of pidToTrackedSession.values()) {
-        if (session.happySessionId === happySessionId) return session;
-      }
-      return sessionIdToFinishedSession.get(happySessionId);
-    };
+    const inFlightSessionResumes = new Map<string, Promise<SpawnSessionResult>>();
 
     const fetchServerSessionMetadata = async (sessionId: string, encryptionKey: Uint8Array, encryptionVariant: 'legacy' | 'dataKey'): Promise<Metadata | null> => {
       try {
@@ -683,9 +682,9 @@ export async function startDaemon(): Promise<void> {
       }
     };
 
-    const resumeSession = async (happySessionId: string, options?: { model?: string; permissionMode?: string }): Promise<SpawnSessionResult> => {
+    const resumeSessionOnce = async (happySessionId: string, options?: { model?: string; permissionMode?: string }): Promise<SpawnSessionResult> => {
       try {
-        const tracked = findTrackedSessionById(happySessionId);
+        const tracked = sessionIdToFinishedSession.get(happySessionId);
         if (!tracked) {
           return { type: 'error', errorMessage: `Session ${happySessionId} is not tracked by this daemon. It may have been started before the daemon or on another machine.` };
         }
@@ -738,6 +737,7 @@ export async function startDaemon(): Promise<void> {
             HAPPY_RECONNECT_METADATA_VERSION: String(tracked.encryption.metadataVersion),
             HAPPY_RECONNECT_AGENT_STATE_VERSION: String(tracked.encryption.agentStateVersion),
           }),
+          happySessionId,
         });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : (error && typeof error === 'object' ? JSON.stringify(error) : String(error));
@@ -747,6 +747,21 @@ export async function startDaemon(): Promise<void> {
           errorMessage: `Failed to resume session: ${errorMessage}`,
         };
       }
+    };
+
+    const resumeSession = async (happySessionId: string, options?: { model?: string; permissionMode?: string }): Promise<SpawnSessionResult> => {
+      return runGuardedSessionResume(
+        inFlightSessionResumes,
+        happySessionId,
+        () => {
+          const activeSession = findActiveTrackedSession(pidToTrackedSession.values(), happySessionId);
+          if (!activeSession) return undefined;
+
+          logger.debug(`[DAEMON RUN] Session ${happySessionId} is already active as PID ${activeSession.pid}; skipping duplicate resume`);
+          return { type: 'success', sessionId: happySessionId };
+        },
+        () => resumeSessionOnce(happySessionId, options),
+      );
     };
 
     // Stop a session by sessionId or PID fallback
