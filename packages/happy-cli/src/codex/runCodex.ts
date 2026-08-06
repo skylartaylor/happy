@@ -393,39 +393,6 @@ export async function runCodex(opts: {
             effort: messageEffort,
         };
 
-        if (
-            !isCodexClearText(message.content.text)
-            && activeTurnMode
-            && hashCodexEnhancedMode(activeTurnMode) === hashCodexEnhancedMode(enhancedMode)
-        ) {
-            const imageInputs = await prepareCodexImageInputItems(attachmentsForThisMessage, {
-                sessionId: session.sessionId,
-            });
-            const hasUserText = message.content.text.trim().length > 0;
-            if (
-                attachmentsForThisMessage.length > 0
-                && imageInputs.inputItems.length === 0
-                && !hasUserText
-            ) {
-                session.sendSessionEvent({
-                    type: 'message',
-                    message: 'No supported images were available to send to Codex.',
-                });
-                return;
-            }
-
-            const steered = await client.steerTurn(message.content.text, {
-                extraInputItems: imageInputs.inputItems,
-            });
-            if (steered) {
-                if (hasUserText) {
-                    messageBuffer.addMessage(message.content.text, 'user');
-                }
-                logger.debug('[Codex] User message steered into active turn');
-                return;
-            }
-        }
-
         const enqueueResult = enqueueCodexUserText({
             text: message.content.text,
             mode: enhancedMode,
@@ -434,6 +401,10 @@ export async function runCodex(opts: {
         });
         if (enqueueResult === 'clear') {
             logger.debug('[Codex] /clear command pushed to isolated queue');
+        }
+        if (activeTurnMode) {
+            logger.debug('[Codex] User message queued; interrupting active turn');
+            await handleAbort();
         }
     }, (error) => {
         logger.warn('[Codex] Failed to handle user message', {
