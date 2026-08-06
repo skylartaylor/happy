@@ -298,6 +298,11 @@ export class CodexAppServerClient {
         return typeof status === 'string' && status.length > 0 ? status : null;
     }
 
+    private isRootThreadNotification(params: any): boolean {
+        const threadId = stringOrNull(params?.threadId);
+        return !threadId || !this._threadId || threadId === this._threadId;
+    }
+
     private shouldHandleRawNotification(method: string): boolean {
         const isRawNotification = method === 'thread/started'
             || method === 'thread/goal/updated'
@@ -365,6 +370,9 @@ export class CodexAppServerClient {
         }
 
         if (method === 'turn/started') {
+            if (!this.isRootThreadNotification(params)) {
+                return true;
+            }
             const turnId = this.extractTurnId(params);
             if (turnId) {
                 this._turnId = turnId;
@@ -378,6 +386,9 @@ export class CodexAppServerClient {
         }
 
         if (method === 'turn/completed') {
+            if (!this.isRootThreadNotification(params)) {
+                return true;
+            }
             this.emitRawTurnCompletion(
                 this.extractTurnId(params),
                 this.extractTurnStatus(params),
@@ -388,6 +399,9 @@ export class CodexAppServerClient {
         }
 
         if (method === 'thread/status/changed') {
+            if (!this.isRootThreadNotification(params)) {
+                return true;
+            }
             const statusType = params?.status?.type;
             if (statusType === 'idle' && this.pendingTurnCompletion) {
                 this.emitRawTurnCompletion(this._turnId, 'completed', null, method);
@@ -1271,13 +1285,14 @@ export class CodexAppServerClient {
 
     async interruptTurn(opts?: { timeoutMs?: number }): Promise<void> {
         if (!this._threadId) return;
-        if (!this._turnId) {
+        const turnId = this.pendingTurnCompletion?.turnId ?? this._turnId;
+        if (!turnId) {
             logger.debug('[CodexAppServer] interruptTurn: no active turnId, skipping');
             return;
         }
         const params: InterruptConversationParams = {
             threadId: this._threadId,
-            turnId: this._turnId,
+            turnId,
         };
         const doInterrupt = async () => {
             try {
@@ -1642,6 +1657,9 @@ export class CodexAppServerClient {
         if (method === 'thread/started' || method === 'turn/started' ||
             method === 'turn/completed' || method === 'thread/status/changed') {
             logger.debug(`[CodexAppServer] Lifecycle notification: ${method}`);
+            if (!this.isRootThreadNotification(params)) {
+                return;
+            }
             // Mark the turn as started so the completion guard lets it through.
             if (method === 'turn/started') {
                 const turnId = this.extractTurnId(params);

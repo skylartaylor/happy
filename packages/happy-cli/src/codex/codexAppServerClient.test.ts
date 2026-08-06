@@ -595,6 +595,104 @@ describe('CodexAppServerClient sandbox integration', () => {
         await client.disconnect();
     });
 
+    it('keeps subagent lifecycle notifications from replacing the root turn', async () => {
+        const requests: MockRpcMessage[] = [];
+        const proc = createMockProcess({
+            pid: 2075,
+            onRequest: (msg, stdout) => {
+                requests.push(msg);
+
+                if (msg.method === 'thread/start' && msg.id != null) {
+                    setTimeout(() => {
+                        pushJsonLine(stdout, {
+                            id: msg.id,
+                            result: {
+                                thread: { id: 'thread-root', path: '/tmp/thread-root' },
+                                model: 'gpt-test',
+                                modelProvider: 'openai',
+                                cwd: '/tmp/project',
+                                approvalPolicy: 'on-request',
+                                sandbox: { type: 'readOnly' },
+                                reasoningEffort: null,
+                            },
+                        });
+                    }, 0);
+                }
+
+                if (msg.method === 'turn/start' && msg.id != null) {
+                    setTimeout(() => {
+                        pushJsonLine(stdout, {
+                            id: msg.id,
+                            result: { turn: { id: 'turn-root' } },
+                        });
+                        pushJsonLine(stdout, {
+                            method: 'turn/started',
+                            params: {
+                                threadId: 'thread-root',
+                                turn: { id: 'turn-root', status: 'inProgress' },
+                            },
+                        });
+                        pushJsonLine(stdout, {
+                            method: 'turn/started',
+                            params: {
+                                threadId: 'thread-child',
+                                turn: { id: 'turn-child', status: 'inProgress' },
+                            },
+                        });
+                        pushJsonLine(stdout, {
+                            method: 'turn/completed',
+                            params: {
+                                threadId: 'thread-child',
+                                turn: { id: 'turn-child', status: 'completed' },
+                            },
+                        });
+                    }, 0);
+                }
+
+                if (msg.method === 'turn/interrupt' && msg.id != null) {
+                    setTimeout(() => {
+                        pushJsonLine(stdout, { id: msg.id, result: { abortReason: 'interrupted' } });
+                        pushJsonLine(stdout, {
+                            method: 'turn/completed',
+                            params: {
+                                threadId: 'thread-root',
+                                turn: { id: 'turn-root', status: 'interrupted' },
+                            },
+                        });
+                    }, 0);
+                }
+            },
+        });
+        mockSpawn.mockImplementationOnce(() => proc);
+
+        const { CodexAppServerClient } = await import('./codexAppServerClient');
+        const client = new CodexAppServerClient();
+        await client.connect();
+        await client.startThread({
+            model: 'gpt-test',
+            cwd: '/tmp/project',
+            approvalPolicy: 'on-request',
+            sandbox: 'read-only',
+        });
+
+        const pendingTurn = client.sendTurnAndWait('delegate work');
+        await waitFor(() => client.turnId === 'turn-root');
+
+        await expect(client.abortTurnWithFallback({ gracePeriodMs: 100 })).resolves.toEqual({
+            hadActiveTurn: true,
+            aborted: true,
+            forcedRestart: false,
+            resumedThread: false,
+        });
+        await expect(pendingTurn).resolves.toEqual({ aborted: true });
+        expect(requests.find((msg) => msg.method === 'turn/interrupt')?.params).toEqual({
+            threadId: 'thread-root',
+            turnId: 'turn-root',
+        });
+
+        await client.disconnect();
+    });
+
     it('force-restarts promptly when turn interrupt RPC does not respond', async () => {
         const firstProcessRequests: MockRpcMessage[] = [];
         const secondProcessRequests: MockRpcMessage[] = [];
